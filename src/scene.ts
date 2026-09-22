@@ -468,11 +468,26 @@ export class GameScene extends Phaser.Scene {
       }
       case 'kick': {
         const g = this.add.graphics().setDepth(870);
-        g.lineStyle(3, 0xffffff, 0.9);
+        const ax = e.x - Math.cos(e.a) * 8;
+        const ay = e.y - 3 - Math.sin(e.a) * 8;
+        g.lineStyle(4, 0xffffff, 1);
         g.beginPath();
-        g.arc(e.x - Math.cos(e.a) * 8, e.y - 3 - Math.sin(e.a) * 8, 16, e.a - 0.9, e.a + 0.9);
+        g.arc(ax, ay, 18, e.a - 1, e.a + 1);
         g.strokePath();
-        this.tweens.add({ targets: g, alpha: 0, duration: 140, onComplete: () => g.destroy() });
+        g.lineStyle(2, 0xffd23f, 0.8);
+        g.beginPath();
+        g.arc(ax, ay, 24, e.a - 0.8, e.a + 0.8);
+        g.strokePath();
+        this.tweens.add({ targets: g, alpha: 0, scale: 1.08, duration: 180, onComplete: () => g.destroy() });
+        for (let i = 0; i < 10; i++) {
+          const a = e.a + (Math.random() - 0.5) * 1.6;
+          this.fx.sparks(e.x + Math.cos(a) * 14, e.y - 3 + Math.sin(a) * 14, 1, 0xffffff, 90);
+        }
+        this.fx.smoke(e.x + Math.cos(e.a) * 12, e.y + Math.sin(e.a) * 12, 3, 8, 0x8a8090);
+        if (e.p === me) {
+          this.kickX += Math.cos(e.a) * 3;
+          this.kickY += Math.sin(e.a) * 3;
+        }
         sfx.kick();
         if (e.p === me) this.trauma = Math.min(1, this.trauma + 0.12);
         break;
