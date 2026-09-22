@@ -367,9 +367,23 @@ export function renderMap(scene: Phaser.Scene, key: string, w: number, h: number
             ctx.fillRect(ox, oy + y, TILE, 1);
           }
         }
-        if ((tx + ty) % 5 === 0) {
-          ctx.fillStyle = '#120c18';
-          ctx.fillRect(ox + 6, oy + 9, 1, 1);
+        for (let y = 0; y < TILE; y++)
+          for (let x = 0; x < TILE; x++)
+            if (hash(ox + x, oy + y, seed + 7) > 0.97) {
+              ctx.fillStyle = '#140e1c';
+              ctx.fillRect(ox + x, oy + y, 1, 1);
+            }
+        ctx.fillStyle = '#6a5a7c';
+        if (at(tx - 1, ty) !== T.Pit) ctx.fillRect(ox, oy, 1, TILE);
+        if (at(tx + 1, ty) !== T.Pit) ctx.fillRect(ox + TILE - 1, oy, 1, TILE);
+        if (at(tx, ty + 1) !== T.Pit) {
+          ctx.fillRect(ox, oy + TILE - 2, TILE, 2);
+          ctx.fillStyle = '#3a2e48';
+          ctx.fillRect(ox, oy + TILE - 3, TILE, 1);
+        }
+        if (at(tx, ty - 1) !== T.Pit) {
+          ctx.fillStyle = '#7a6a8c';
+          ctx.fillRect(ox, oy, TILE, 1);
         }
         continue;
       }
