@@ -3,7 +3,7 @@
 Browser co-op roguelike dungeon crawler for 1–4 players. It's top-down pixel art with punchy, physics-heavy combat: knockback, screen shake, hit-stop, blood that stays on the floor. Fight down three procedurally generated floors of hazards and monsters to reach the Bone Warden.
 
 - **Client:** Vite + TypeScript + Phaser 3. Every sprite, tile and sound is generated in code, so there are no external assets.
-- **Server:** Node + `ws`. The server is authoritative and simulates at 30 Hz. Clients only send input and render interpolated snapshots, plus local particle, decal and audio effects.
+- **Server:** Node + `ws`. The server is authoritative and simulates at 30 Hz. Clients predict their own player, interpolate everyone else, and exchange compact binary deltas with the server (see [Netcode](#netcode)).
 
 ## Run it
 
@@ -32,7 +32,11 @@ npm start            # serves dist/ + WebSocket on PORT (default 47291)
 | --- | --- |
 | Start a new room on a given floor (4 = boss) | `START_FLOOR=4 npm run dev:server` |
 | Let the tab play itself (for multi-tab testing and demos) | append `?bot=1` to the URL |
-| Headless 2-player smoke test against a running server | `npx tsx scripts/bot.ts` |
+| Netcode overlay (ping, ticks, corrections, bandwidth, link simulator) | press **F3** or **`**, or append `?debug=1` |
+| Simulate a bad connection (added RTT ms, per-packet jitter ms, % loss) | append `?lag=120&jitter=30&loss=1`, or edit live in the overlay |
+| Snapshot send rate (1 = 30 Hz, 2 = 15 Hz) | `SEND_EVERY=2 npm run dev:server` |
+| Turn off lag compensation (A/B testing) | `LAG_COMP=0 npm run dev:server` |
+| Headless 2-player smoke test against a running server (prints bandwidth) | `npx tsx scripts/bot.ts` |
 | Type-check | `npm run typecheck` |
 
 ## How to play
@@ -66,15 +70,37 @@ npm start            # serves dist/ + WebSocket on PORT (default 47291)
   - A downed player can be revived by a teammate standing next to them for 2 seconds.
   - If the whole party goes down, the run is over. **Descend again** restarts from floor 1.
 
+## Netcode
+
+The goal is that your own actions feel instant at 100–200 ms ping and everyone else moves smoothly.
+
+- **Shared deterministic movement.** `shared/sim/` holds the tile collision, input quantization, the player movement controller and bullet stepping. The server and the client run the exact same code on the same quantized inputs. Movement is a `MovementController` operating on a `MoveState`; new characters (sprint drift, slides, charges, blinks) should be new controllers that add fields to `MoveState`/`MOVE_KEYS`, so they are reconciled automatically.
+- **Client-side prediction + reconciliation.** Every 30 Hz tick the client samples input, simulates your player immediately and sends the input with a sequence number (plus the previous 3 for loss resilience). Each snapshot carries your authoritative `MoveState` and the last input seq the server applied; the client rewinds to it and replays unacknowledged inputs. Any visible difference is blended out over ~80 ms; teleports (pits, stairs) snap. Your shots, muzzle flash, recoil, kick arc and dash trail play locally with no round trip, and your bullets are simulated locally (hits show a spark and flash; damage numbers and blood wait for the server).
+- **Server input buffer.** The server consumes one input per tick per player from a small jitter buffer. The client speeds up or slows down its tick clock by a few percent to hold the buffer near a target sized from measured jitter. If an input is missing the server repeats the last one (and fades to neutral after 4 ticks), carries late dash/kick presses forward, fast-forwards a backlog, and tells a late client to skip ahead.
+- **Snapshot interpolation.** Remote players, enemies, barrels and items are drawn slightly in the past (send interval + ~2.5× measured jitter, typically 70–120 ms), on a smoothed estimate of the server clock that is nudged by rate changes, never jumps. Short gaps extrapolate for up to 3 ticks.
+- **Bullets on the right timeline.** Bullets are sent once as a (tick, position, velocity) anchor and only resent when they bounce or get deflected. Enemy bullets are drawn at your predicted time so what you dodge is what the server tests against. Teammates' bullets sit on the interpolated timeline with the enemies they hit.
+- **Lag compensation.** Each input carries the render tick you were looking at. Your bullets and kicks are tested against enemy positions from that moment (up to 600 ms back), so if it hit on your screen it hits on the server.
+- **Bandwidth.** Snapshots are binary, quantized (1/8 px positions, 8-bit angles), and delta-compressed per field against the newest snapshot each client has acknowledged. Unchanged entities cost nothing. Names, items and stats go on a reliable JSON side channel only when they change. A typical 2-player floor runs at about 100–200 bytes per snapshot (3–7 KB/s down per player). The old full JSON snapshots were about 1.1 KB (33 KB/s).
+- **Reconnect.** Joining returns a slot token, stored in `sessionStorage` (per tab). If the socket drops, the client retries with backoff and rejoins the same player. A reload of the tab also rejoins. The server holds an offline player's slot for 90 s (invulnerable, ignored by enemies, shown as offline) and pings sockets to notice dead links quickly.
+
+All of the unreliable traffic (snapshots, inputs, pings) tolerates loss and reordering, so the transport can move from WebSocket to WebTransport/WebRTC datagrams without protocol changes.
+
 ## Layout
 
 ```
-shared/protocol.ts   message types, constants, item/perk tables
-server/index.ts      HTTP + WebSocket server, room codes
-server/game.ts       authoritative simulation (physics, AI, combat, hazards, progression)
+shared/protocol.ts   reliable (JSON) message types, constants, item/perk tables
+shared/sim/          deterministic code run by both sides: map collision, input, movement, bullets
+shared/net/          binary wire format: quantized delta snapshots, inputs, pings
+server/index.ts      HTTP + WebSocket server, fixed-step loop, room codes, rejoin, heartbeats
+server/game.ts       authoritative simulation (AI, combat, hazards, progression), input queue, lag comp, snapshots
 server/dungeon.ts    seeded floor generator (rooms, corridors, hazards, spawns, boss arena)
-src/main.ts          lobby + boot
-src/scene.ts         Phaser scene: rendering, interpolation, camera, juice, input
+src/main.ts          lobby, session token, boot and reconnect UI
+src/net/transport.ts WebSocket wrapper: reliable/unreliable channels, link simulator, auto-reconnect
+src/net/timeline.ts  snapshot buffer + smoothed server clock for interpolation
+src/net/predict.ts   local prediction, reconciliation, predicted bullets
+src/net/client.ts    glue: decoding, input ticks, pacing, event timing, render-ready views
+src/debug.ts         F3 netcode overlay
+src/scene.ts         Phaser scene: rendering, camera, juice, input
 src/fx.ts            particles + persistent floor decals (blood, casings, scorch, corpses)
 src/sprites.ts       procedural pixel-art textures and map renderer
 src/audio.ts         WebAudio synthesized SFX
@@ -84,7 +110,10 @@ src/autopilot.ts     ?bot=1 self-play helper
 
 ## Known gaps
 
-- There's no client-side prediction. Your own movement has about one server tick of latency, which is fine on a LAN but noticeable over the internet.
+- The transport is still WebSocket (TCP), so a real lost packet stalls the stream briefly instead of just dropping one snapshot. The protocol is already built for datagrams.
+- Pushes from enemies and teammates and enemy knockback on you are not predicted. They show up as small corrections that get blended out.
+- Your hits flash instantly, but damage numbers, blood and kills arrive about one round trip later. Shots fired after a kill you haven't heard about yet still flash on the corpse.
+- Other players' shots and kicks appear with the interpolation delay (~100 ms plus their latency), as in most shooters.
 - Mouse and keyboard only. There are no touch or gamepad controls yet.
-- There's no music or persistence (meta-progression, saves), and no reconnect into an existing slot after a disconnect.
+- There's no music or persistence (meta-progression, saves). Reconnect holds your slot for 90 s, but a server restart ends the run.
 - Balance is first-pass.
