@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Boneyard — co-op dungeon crawler</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'><rect width='8' height='8' fill='%23140c18'/><rect x='2' y='1' width='4' height='4' fill='%23e8e0c8'/><rect x='3' y='2' width='1' height='1' fill='%23ff3355'/><rect x='5' y='2' width='1' height='1' fill='%23ff3355'/><rect x='3' y='5' width='3' height='2' fill='%23e8e0c8'/></svg>" />
+  </head>
+  <body>
+    <div id="game"></div>
+    <div id="vignette"></div>
+    <div id="flash"></div>
+
+    <section id="lobby">
+      <div class="lobby-card">
+        <h1>BONEYARD</h1>
+        <p class="tag">A co-op crawl through four floors of blood, bone and bad decisions.</p>
+        <label>Your name<input id="name" maxlength="14" placeholder="Crawler" autocomplete="off" /></label>
+        <button id="create" class="primary">Create room</button>
+        <div class="or"><span>or join a friend</span></div>
+        <div class="row">
+          <input id="code" maxlength="4" placeholder="CODE" autocomplete="off" />
+          <button id="join">Join</button>
+        </div>
+        <p id="lobby-error" role="alert"></p>
+        <ul class="controls">
+          <li><b>WASD</b> move</li>
+          <li><b>Mouse</b> aim</li>
+          <li><b>Left click</b> shoot</li>
+          <li><b>Right click / F</b> kick — shove enemies into hazards, boot barrels, bat bullets back</li>
+          <li><b>Space</b> dash — i-frames, hop over pits</li>
+          <li><b>1 2 3</b> pick level-up perk</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="hud" hidden>
+      <div id="hud-left">
+        <div class="bar hp"><div id="hp-fill"></div><span id="hp-text"></span></div>
+        <div class="bar xp"><div id="xp-fill"></div><span id="xp-text"></span></div>
+        <div class="bar dash"><div id="dash-fill"></div></div>
+        <div id="items"></div>
+      </div>
+      <div id="hud-top">
+        <div id="floor-label"></div>
+        <div id="objective"></div>
+        <div id="boss-bar" hidden><span>THE BONE WARDEN</span><div class="bar"><div id="boss-fill"></div></div></div>
+      </div>
+      <div id="hud-right">
+        <div id="room-box">
+          <span>ROOM</span><b id="room-code"></b>
+          <button id="copy-link" title="Copy invite link">Copy invite</button>
+        </div>
+        <ul id="party"></ul>
+      </div>
+      <div id="banner"></div>
+      <ul id="feed"></ul>
+      <div id="levelup" hidden>
+        <h2>LEVEL UP <small id="lvl-more"></small></h2>
+        <div id="cards"></div>
+      </div>
+      <div id="endscreen" hidden>
+        <h2 id="end-title"></h2>
+        <p id="end-sub"></p>
+        <ul id="end-stats"></ul>
+        <button id="restart" class="primary">Descend again</button>
+      </div>
+      <div id="help">WASD move · Click shoot · RMB/F kick · Space dash</div>
+    </section>
+
+    <div id="conn" hidden><p>Connection lost. <button onclick="location.reload()">Reconnect</button></p></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,32 @@
+{
+  "name": "boneyard",
+  "version": "1.0.0",
+  "description": "Browser co-op roguelike dungeon crawler (Phaser + authoritative Node WebSocket server)",
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c magenta,cyan \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "tsx watch server/index.ts",
+    "dev:client": "vite",
+    "build": "vite build",
+    "start": "tsx server/index.ts",
+    "typecheck": "tsc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://origin.cursor.com/git/alex-doliner/tmp-e5f97fe8d5afe21b.git"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "phaser": "^3.90.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "@types/ws": "^8.18.1",
+    "concurrently": "^10.0.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.0"
+  },
+  "private": true,
+  "type": "module"
+}
