@@ -33,6 +33,7 @@ npm start            # serves dist/ + WebSocket on PORT (default 47291)
 | Start a new room on a given floor (4 = boss) | `START_FLOOR=4 npm run dev:server` |
 | Let the tab play itself (for multi-tab testing and demos) | append `?bot=1` to the URL (works for both kits) |
 | Preselect a character | append `?char=archer` or `?char=knight` |
+| Force the camera zoom (e.g. for side-by-side windows) | append `?zoom=3` |
 | Netcode overlay (ping, ticks, corrections, bandwidth, link simulator) | press **F3** or **`**, or append `?debug=1` |
 | Simulate a bad connection (added RTT ms, per-packet jitter ms, % loss) | append `?lag=120&jitter=30&loss=1`, or edit live in the overlay |
 | Snapshot send rate (1 = 30 Hz, 2 = 15 Hz) | `SEND_EVERY=2 npm run dev:server` |

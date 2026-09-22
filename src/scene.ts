@@ -174,7 +174,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   fitZoom() {
-    this.baseZoom = Math.max(2, Math.floor(Math.min(this.scale.width / 360, this.scale.height / 230)));
+    const forced = Number(new URLSearchParams(location.search).get('zoom'));
+    this.baseZoom = forced > 0 ? forced : Math.max(2, Math.floor(Math.min(this.scale.width / 360, this.scale.height / 230)));
   }
 
   choose(i: number) {
