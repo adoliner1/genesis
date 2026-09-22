@@ -86,7 +86,7 @@ export class DebugOverlay {
       `tick      server ${c.latestTick}  render ${f(tl.renderTick)}  predicted ${f(c.predTick())}`,
       `interp    target ${f(tl.delayTicks, 2)} ticks, actual ${f(tl.behindLatest(), 2)} (${f(tl.behindLatest() * TICK_MS, 0)} ms)  jitter ${f(tl.jitterMs, 0)} ms${tl.extrapolating ? '  EXTRAP' : ''}`,
       `predict   seq ${p.seq}  unacked ${p.pending}  ahead ${f(ahead)} ticks  pace ${f(c.pace, 3)}`,
-      `inputbuf  ${f(c.bufEma, 2)} (target ${f(c.bufTarget, 1)})  server guessed ${c.starved} inputs`,
+      `inputbuf  ${f(c.bufEma, 2)} (target ${f(c.bufTarget, 1)})  server guessed ${c.starved}  skips ${c.skips}`,
       `correct   ${p.corrections}  last ${f(p.lastErr, 2)} ${p.lastErrKey}  snaps ${p.snaps}  replayed ${p.replayed}`,
       `sizes     <1px ${p.errBuckets[0]}  1-4 ${p.errBuckets[1]}  4-16 ${p.errBuckets[2]}  >16 ${p.errBuckets[3]}   blending ${f(Math.hypot(p.errX, p.errY), 2)} px`,
       `hits      agreed ${c.hitMatch.both}  missed ${c.hitMatch.predictedOnly}  overkill ${c.hitMatch.overkill}  server-only ${c.hitMatch.serverOnly}`,

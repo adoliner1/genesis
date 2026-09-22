@@ -36,6 +36,7 @@ function worstField(a: MoveState, b: MoveState) {
 export interface LocalBullet {
   id: number;
   seq: number;
+  idx: number;
   x: number;
   y: number;
   px: number;
@@ -172,12 +173,13 @@ export class Predictor {
     const st = this.stats;
     this.predictedSeqs.add(seq);
     if (this.predictedSeqs.size > 256) this.predictedSeqs.delete(this.predictedSeqs.values().next().value!);
-    for (const a of shotAngles(s.aim, st.multishot, seq)) {
+    for (const [idx, a] of shotAngles(s.aim, st.multishot, seq).entries()) {
       const x = s.x + Math.cos(s.aim) * MUZZLE;
       const y = s.y + Math.sin(s.aim) * MUZZLE;
       this.bullets.push({
         id: this.nextBulletId--,
         seq,
+        idx,
         x,
         y,
         px: x,
@@ -197,7 +199,7 @@ export class Predictor {
    * Fly own bullets on the predicted timeline against targets as currently displayed.
    * Impacts are cosmetic (the bullet disappears, a spark plays); damage stays server-side.
    */
-  stepBullets(enemies: Target[], barrels: Target[], onImpact: (x: number, y: number, what: 'wall' | 'enemy' | 'barrel', id: number, seq: number) => void) {
+  stepBullets(enemies: Target[], barrels: Target[], onImpact: (x: number, y: number, what: 'wall' | 'enemy' | 'barrel', id: number, key: string) => void) {
     if (!this.map) return;
     const keep: LocalBullet[] = [];
     outer: for (const b of this.bullets) {
@@ -207,20 +209,20 @@ export class Predictor {
         const st = bulletHalfStep(b, this.map);
         if (st === BOUNCED) {
           b.hit.clear();
-          onImpact(b.x, b.y, 'wall', 0, b.seq);
+          onImpact(b.x, b.y, 'wall', 0, '');
         } else if (st === DEAD) {
-          onImpact(b.x, b.y, 'wall', 0, b.seq);
+          onImpact(b.x, b.y, 'wall', 0, '');
           continue outer;
         }
         for (const br of barrels)
           if (Math.hypot(br.x - b.x, br.y - b.y) < 7 + b.r) {
-            onImpact(b.x, b.y, 'barrel', br.id, b.seq);
+            onImpact(b.x, b.y, 'barrel', br.id, '');
             continue outer;
           }
         for (const e of enemies) {
           if (b.hit.has(e.id) || Math.hypot(e.x - b.x, e.y - b.y) >= e.r + b.r) continue;
           b.hit.add(e.id);
-          onImpact(b.x, b.y, 'enemy', e.id, b.seq);
+          onImpact(b.x, b.y, 'enemy', e.id, `${b.seq}:${b.idx}:${e.id}`);
           if (b.pierce > 0) b.pierce--;
           else continue outer;
         }

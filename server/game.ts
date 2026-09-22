@@ -71,10 +71,15 @@ interface NetState {
   ack: number;
   buf: number;
   starved: number;
+  /** Consecutive ticks without a real input; guesses decay to neutral so an idle tab stops moving. */
+  streak: number;
+  newest: number;
   /** Seqs the server had to guess; a late copy's dash/kick is carried into the next input. */
   guessed: Set<number>;
   carry: number;
   snapAck: number;
+  /** Newest input seq seen, so snapshot acks follow packet order (and can reset after a rejoin). */
+  ackFrom: number;
   metaKey: string;
 }
 
@@ -262,7 +267,7 @@ export class Room {
       old.close();
     }
     const wasOffline = p.net.offline;
-    Object.assign(p.net, { ws, offline: false, queue: new Map(), guessed: new Set(), carry: 0, nextSeq: 0, snapAck: 0, metaKey: '', buf: 0 });
+    Object.assign(p.net, { ws, offline: false, queue: new Map(), guessed: new Set(), carry: 0, nextSeq: 0, newest: 0, streak: 0, snapAck: 0, ackFrom: 0, metaKey: '', buf: 0 });
     p.invuln = Math.max(p.invuln, 45);
     this.greet(p);
     if (wasOffline) this.events.push({ e: 'msg', text: `${p.name} reconnected` });
@@ -306,9 +311,12 @@ export class Room {
       ack: 0,
       buf: 0,
       starved: 0,
+      streak: 0,
+      newest: 0,
       guessed: new Set(),
       carry: 0,
       snapAck: 0,
+      ackFrom: 0,
       metaKey: '',
     };
   }
@@ -377,9 +385,15 @@ export class Room {
     const m = decodeInputs(data);
     if (!m) return;
     const n = p.net;
-    if (m.ackTick > n.snapAck && m.ackTick <= this.tick) n.snapAck = m.ackTick;
     if (!m.inputs.length) return;
-    if (!n.nextSeq) n.nextSeq = m.inputs[m.inputs.length - 1].seq;
+    const newest = m.inputs[m.inputs.length - 1].seq;
+    n.newest = Math.max(n.newest, newest);
+    if (newest >= n.ackFrom && m.ackTick <= this.tick) {
+      n.ackFrom = newest;
+      n.snapAck = m.ackTick;
+    }
+    // Start from the oldest redundant copy so the jitter buffer begins non-empty.
+    if (!n.nextSeq) n.nextSeq = m.inputs[0].seq;
     for (const inp of m.inputs) {
       if (inp.seq >= n.nextSeq && inp.seq < n.nextSeq + 256 && !n.queue.has(inp.seq)) n.queue.set(inp.seq, inp);
       else if (n.guessed.delete(inp.seq)) n.carry |= inp.buttons & (BTN_DASH | BTN_KICK);
@@ -391,9 +405,11 @@ export class Room {
     const n = p.net;
     if (!n.nextSeq) return null;
     let inp = n.queue.get(n.nextSeq);
-    if (inp) n.queue.delete(n.nextSeq);
-    else {
-      inp = { ...n.last, seq: n.nextSeq, buttons: n.last.buttons & BTN_SHOOT };
+    if (inp) {
+      n.queue.delete(n.nextSeq);
+      n.streak = 0;
+    } else {
+      inp = ++n.streak > 4 ? { ...neutralInput(n.nextSeq), aim: n.last.aim } : { ...n.last, seq: n.nextSeq, buttons: n.last.buttons & BTN_SHOOT };
       n.starved++;
       n.guessed.add(n.nextSeq);
       if (n.guessed.size > 64) n.guessed.delete(n.guessed.values().next().value!);
@@ -609,7 +625,7 @@ export class Room {
   }
 
   // ---------- combat helpers ----------
-  private damageEnemy(e: Enemy, dmg: number, dx: number, dy: number, knock: number, pid: number, stagger = 5, sq = 0) {
+  private damageEnemy(e: Enemy, dmg: number, dx: number, dy: number, knock: number, pid: number, stagger = 5, sq = 0, bi = 0) {
     if (e.hp <= 0) return;
     e.hp -= dmg;
     const kf = knock / e.mass;
@@ -617,7 +633,7 @@ export class Room {
     e.vy += dy * kf;
     if (e.k !== 'boss' || kf > 60) e.stagger = Math.max(e.stagger, stagger);
     e.aggro = true;
-    this.events.push({ e: 'hit', x: r1(e.x), y: r1(e.y), a: r1(Math.atan2(dy, dx)), who: 'enemy', id: e.id, dmg: Math.round(dmg), by: pid, ...(sq ? { sq } : {}) });
+    this.events.push({ e: 'hit', x: r1(e.x), y: r1(e.y), a: r1(Math.atan2(dy, dx)), who: 'enemy', id: e.id, dmg: Math.round(dmg), by: pid, ...(sq ? { sq, bi } : {}) });
     if (e.hp <= 0) this.killEnemy(e, pid, Math.atan2(dy, dx));
     else if (e.k === 'boss' && !e.phase2 && e.hp < e.maxHp / 2) {
       e.phase2 = true;
@@ -1049,7 +1065,9 @@ export class Room {
         const more = this.takeInput(p);
         if (more && this.stepPlayer(p, more)) return;
       }
-      p.net.buf = p.net.queue.size;
+      // Negative depth tells the client how many ticks late its input stream is, so it can skip ahead.
+      const n = p.net;
+      n.buf = n.queue.size || (n.newest && n.newest < n.nextSeq ? n.newest - n.nextSeq : 0);
     }
   }
 
@@ -1352,7 +1370,7 @@ export class Room {
             if (len(ex - b.x, ey - b.y) < e.r + b.r) {
               const sp = len(b.vx, b.vy) || 1;
               if (process.env.DEBUG_LAG) this.lagLog.push(b.lag);
-              this.damageEnemy(e, b.dmg, b.vx / sp, b.vy / sp, b.knock, b.pid, 5, b.seq);
+              this.damageEnemy(e, b.dmg, b.vx / sp, b.vy / sp, b.knock, b.pid, 5, b.seq, b.idx);
               b.hit.add(e.id);
               if (b.pierce > 0) b.pierce--;
               else continue outer;

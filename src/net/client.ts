@@ -95,6 +95,8 @@ export class NetClient {
   starved = 0;
   private starveBoost = 0;
   private lastStarved = -1;
+  private skipUntil = 0;
+  skips = 0;
   pace = 1;
   rtt = 0;
   rttJitter = 0;
@@ -130,6 +132,7 @@ export class NetClient {
       this.code = m.code;
       this.resync();
     } else if (m.t === 'floor') {
+      if (this.floor?.ep === m.ep) return;
       this.floor = m;
       this.map = { w: m.w, h: m.h, tiles: parseTiles(m.tiles) };
       this.pred.map = this.map;
@@ -145,12 +148,10 @@ export class NetClient {
     }
   }
 
-  /** Drop all timing/prediction state, e.g. after reconnecting into our slot. */
+  /** Drop prediction and timing state after (re)joining; decoded baselines stay valid for this room. */
   private resync() {
     this.pred.reset();
-    this.worlds.clear();
     this.tl.clear();
-    this.latestTick = 0;
     this.lastStarved = -1;
     this.seqOffset = NaN;
     this.inputs = [];
@@ -196,7 +197,14 @@ export class NetClient {
       const off = world.tick - me.ack;
       this.seqOffset = Number.isNaN(this.seqOffset) || Math.abs(off - this.seqOffset) > 4 ? off : this.seqOffset + (off - this.seqOffset) * 0.1;
     }
-    this.bufEma += (me.buf - this.bufEma) * 0.08;
+    if (me.buf < 0 && now > this.skipUntil) {
+      // Our inputs are arriving after the server needed them (e.g. after a stall): jump ahead instead of
+      // letting the pace controller crawl back while every input is guessed.
+      this.pred.seq += -me.buf + Math.round(this.bufTarget);
+      this.skipUntil = now + this.rtt + 150;
+      this.skips++;
+    }
+    this.bufEma += (Math.max(0, me.buf) - this.bufEma) * 0.08;
     if (this.lastStarved >= 0) {
       const d = (me.starved - this.lastStarved + 65536) % 65536;
       this.starved += d;
@@ -227,7 +235,7 @@ export class NetClient {
         now = e.who === 'player' ? e.id === me : e.by === me;
         if (e.who === 'enemy' && e.by === me) {
           this.confirmedHits++;
-          if (e.sq && this.predHitKeys.delete(`${e.sq}:${e.id}`)) this.hitMatch.both++;
+          if (e.sq && this.predHitKeys.delete(`${e.sq}:${e.bi ?? 0}:${e.id}`)) this.hitMatch.both++;
           else if (e.sq) this.hitMatch.serverOnly++;
         }
         break;
@@ -278,7 +286,7 @@ export class NetClient {
     for (const [k, t] of this.predHitKeys)
       if (now - t > 1500) {
         this.predHitKeys.delete(k);
-        if (this.killed.has(Number(k.split(':')[1]))) this.hitMatch.overkill++;
+        if (this.killed.has(Number(k.split(':')[2]))) this.hitMatch.overkill++;
         else this.hitMatch.predictedOnly++;
       }
   }
@@ -295,10 +303,10 @@ export class NetClient {
     if (view) {
       const enemies: Target[] = view.enemies.map((e) => ({ id: e.id, x: e.x, y: e.y, r: ENEMY_R[e.k] }));
       const barrels: Target[] = view.barrels.map((b) => ({ id: b.id, x: b.x, y: b.y, r: 6 }));
-      this.pred.stepBullets(enemies, barrels, (x, y, what, id, seq) => {
+      this.pred.stepBullets(enemies, barrels, (x, y, what, id, key) => {
         if (what === 'enemy') {
           this.predictedHits++;
-          this.predHitKeys.set(`${seq}:${id}`, performance.now());
+          this.predHitKeys.set(key, performance.now());
         }
         this.hooks?.impact(x, y, what, id);
       });

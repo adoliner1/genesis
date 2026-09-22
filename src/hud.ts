@@ -104,13 +104,13 @@ export class Hud {
       obj.classList.toggle('open', s.stairs);
     }
 
-    const partyKey = s.players.map((p) => `${p.id}${p.hp}${p.down}${p.lvl}${p.rev}`).join('|');
+    const partyKey = s.players.map((p) => `${p.id}${p.hp}${p.down}${p.lvl}${p.rev}${p.off}${p.name}`).join('|');
     if (partyKey !== this.lastParty) {
       this.lastParty = partyKey;
       $('party').innerHTML = s.players
         .map(
           (p) =>
-            `<li class="${p.down ? 'down' : ''}" style="border-color:${PLAYER_COLORS[p.c]}"><span>${p.id === myId ? '▶ ' : ''}${escape(p.name)} · LV${p.lvl}${
+            `<li class="${p.down || p.off ? 'down' : ''}" style="border-color:${PLAYER_COLORS[p.c]}"><span>${p.id === myId ? '▶ ' : ''}${escape(p.name)} · LV${p.lvl}${p.off ? ' · OFFLINE' : ''}${
               p.down ? ` · DOWN ${p.rev > 0 ? Math.round(p.rev * 100) + '%' : ''}` : ''
             }</span><div class="mini"><div style="width:${(100 * p.hp) / p.maxHp}%"></div></div></li>`,
         )
