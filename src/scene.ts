@@ -38,7 +38,11 @@ interface View {
   /** Props (barrels, items) stay drawn as a last-known memory once they leave sight. */
   seen?: boolean;
   ghost?: boolean;
+  /** Seconds since the server stopped sending it; it fades out instead of vanishing. */
+  gone?: number;
 }
+
+const LINGER = 0.15;
 
 export interface Boot {
   client: NetClient;
@@ -262,6 +266,7 @@ export class GameScene extends Phaser.Scene {
     upd?: (v: View, o: T) => void,
     dt = 0,
     remember = false,
+    linger = false,
   ) {
     const seen = new Set<number>();
     for (const o of list) {
@@ -272,6 +277,7 @@ export class GameScene extends Phaser.Scene {
         map.set(o.id, v);
       }
       v.ghost = false;
+      v.gone = 0;
       if (dt > 0) v.spd += (Math.hypot(o.x - v.x, o.y - v.y) / dt - v.spd) * Math.min(1, dt * 15);
       v.x = o.x;
       v.y = o.y;
@@ -284,6 +290,7 @@ export class GameScene extends Phaser.Scene {
           v.ghost = true;
           continue;
         }
+        if (linger && (v.gone = (v.gone ?? 0) + dt) < LINGER) continue;
         this.destroyView(v);
         map.delete(id);
       }
@@ -338,6 +345,8 @@ export class GameScene extends Phaser.Scene {
       },
       undefined,
       dt,
+      false,
+      true,
     );
     this.sync(
       this.bullets,
@@ -810,6 +819,12 @@ export class GameScene extends Phaser.Scene {
       shadow.setPosition(v.x, v.y + 1).setAlpha(fa);
       if (e.hp < e.maxHp && e.k !== 'boss' && fa > 0) this.bar(o, v.x, v.y - (e.k === 'brute' ? 16 : 13), 12, e.hp / e.maxHp, 0xff3355, fa);
     }
+    for (const v of this.enemies.values())
+      if (v.gone) {
+        const fa = this.fogAlpha(v, dt) * Math.max(0, 1 - v.gone / LINGER);
+        v.spr.setAlpha(fa);
+        (v.extra![0] as Phaser.GameObjects.Ellipse).setAlpha(fa);
+      }
     for (const v of this.bullets.values()) {
       const fa = v.kind === 'eb' ? this.fogAlpha(v, dt) : 1;
       v.spr.setPosition(v.x, v.y - 3).setRotation(Math.atan2(v.vy ?? 0, v.vx ?? 1)).setAlpha(fa);

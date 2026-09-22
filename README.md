@@ -37,7 +37,9 @@ npm start            # serves dist/ + WebSocket on PORT (default 47291)
 | Snapshot send rate (1 = 30 Hz, 2 = 15 Hz) | `SEND_EVERY=2 npm run dev:server` |
 | Turn off lag compensation (A/B testing) | `LAG_COMP=0 npm run dev:server` |
 | Headless 2-player smoke test against a running server (prints bandwidth) | `npx tsx scripts/bot.ts` |
+| Turn off edge-pan (e.g. windowed play) | append `?edgepan=0` |
 | Type-check | `npm run typecheck` |
+| Vision + fog leak checks (headless, no server needed) | `npm test` |
 
 ## How to play
 
@@ -49,6 +51,9 @@ npm start            # serves dist/ + WebSocket on PORT (default 47291)
 | Right click / F | Kick. Shoves enemies into hazards, boots barrels, bats enemy bullets back |
 | Space / Shift | Dash. Gives i-frames and lets you hop over pits |
 | 1 / 2 / 3 | Pick a level-up perk |
+| Middle-drag, or push the cursor against the window edge | Pan the camera freely |
+| Tab | Watch the next teammate (their vision is shared with you) |
+| C, or a middle click | Snap the camera back to you |
 
 - **Floors 1–3** are generated rooms and corridors. Kill every enemy to unlock the stairs, then step on them to take the whole party down.
 - **Floor 4** is the Bone Warden's crypt. The boss cycles bullet bursts, charges, aimed sprays and summons, and gets enraged below 50% HP. If it charges into a wall, it's stunned and hurt.
@@ -85,6 +90,16 @@ The goal is that your own actions feel instant at 100–200 ms ping and everyone
 
 All of the unreliable traffic (snapshots, inputs, pings) tolerates loss and reordering, so the transport can move from WebSocket to WebTransport/WebRTC datagrams without protocol changes.
 
+## Fog of war
+
+RTS-style: each player sees 11 tiles by line of sight, walls block it, and the party shares vision. What you can't see is dark; what you've seen before stays dimmed (with last-known barrels and items); the rest is black.
+
+- **Server-authoritative.** `server/vision.ts` shadowcasts from every player once per tick. Each team gets its own snapshot history: enemies, enemy bullets, barrels, items and positional events (hits, deaths, shots, explosions) outside the team's vision are never sent, so there's nothing to reveal with a hacked client. Enemy bullets first seen mid-flight are re-anchored where they became visible, so they don't give away the shooter.
+- **Gameplay API.** `room.canSee(pid, x, y, r?)` (shared team vision), `vision.seesDirectly(pid, …)` (own eyes only), `vision.lineOfSight(x0, y0, x1, y1)` for any observer, and `room.addVisionBlocker(x, y, r, ticks)` for smoke-style volumes that block sight and punch holes in the fog. Nothing uses blockers yet; `npm test` covers them.
+- **No popping.** The server streams 1.5 tiles past what anyone can see plus one tile around corners, while the client draws fog from the same shared shadowcaster (`shared/sim/vision.ts`) using your predicted position and teammates' interpolated ones. Things arrive hidden under the fog and fade in as the fog clears; things leaving sight fade out.
+- **Cheap.** Clients compute their own fog, so vision costs no bandwidth. Snapshots get smaller, since hidden entities aren't sent. The explored map (a ~400-byte bitset) is sent only on join or reconnect.
+- **Look.** A dithered overlay quantized to eight levels, with 4×4 world-pixel cells, so the fog edge reads as pixel art.
+
 ## Layout
 
 ```
@@ -94,12 +109,16 @@ shared/net/          binary wire format: quantized delta snapshots, inputs, ping
 server/index.ts      HTTP + WebSocket server, fixed-step loop, room codes, rejoin, heartbeats
 server/game.ts       authoritative simulation (AI, combat, hazards, progression), input queue, lag comp, snapshots
 server/dungeon.ts    seeded floor generator (rooms, corridors, hazards, spawns, boss arena)
+server/vision.ts     authoritative fog of war: per-player/team vision, sight blockers, visibility queries
+shared/sim/vision.ts shadowcasting shared by server and client
 src/main.ts          lobby, session token, boot and reconnect UI
 src/net/transport.ts WebSocket wrapper: reliable/unreliable channels, link simulator, auto-reconnect
 src/net/timeline.ts  snapshot buffer + smoothed server clock for interpolation
 src/net/predict.ts   local prediction, reconciliation, predicted bullets
 src/net/client.ts    glue: decoding, input ticks, pacing, event timing, render-ready views
 src/debug.ts         F3 netcode overlay
+src/fog.ts           client fog state + dithered fog overlay
+src/camera.ts        free camera: middle-drag, edge-pan, teammate follow, snap back
 src/scene.ts         Phaser scene: rendering, camera, juice, input
 src/fx.ts            particles + persistent floor decals (blood, casings, scorch, corpses)
 src/sprites.ts       procedural pixel-art textures and map renderer
@@ -117,3 +136,4 @@ src/autopilot.ts     ?bot=1 self-play helper
 - Mouse and keyboard only. There are no touch or gamepad controls yet.
 - There's no music or persistence (meta-progression, saves). Reconnect holds your slot for 90 s, but a server restart ends the run.
 - Balance is first-pass.
+- Fog: the floor layout itself is sent up front, so a hacked client could draw the map (not what's on it). Enemy AI ignores fog: archers can shoot from up to 13 tiles, just past your 11-tile sight. The "last few enemies" arrows only point at enemies someone can see.

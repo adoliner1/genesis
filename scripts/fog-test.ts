@@ -19,7 +19,7 @@ function fakeSocket(onBin: (b: Uint8Array) => void, onJson: (m: ServerMsg) => vo
 
 const room = new Room('TEST');
 const worlds = new Map<number, World>();
-let latest: World | null = null;
+let latest = null as World | null;
 let bytes = 0;
 let snaps = 0;
 let fogMsgs = 0;
@@ -57,8 +57,17 @@ const ws = fakeSocket(
 const p = room.addPlayer(ws, 'Tester')!;
 let seq = 0;
 for (let t = 0; t < 30 * 20; t++) {
-  const a = t / 40;
-  room.handleBinary(p, encodeInputs(latest?.tick ?? 0, [quantizeInput(++seq, Math.cos(a), Math.sin(a * 0.7), a, t % 3 === 0, false, false, 0)]));
+  // Every 2 s, hop next to a live enemy so combat events happen at the edge of sight.
+  const e = room.enemies[(t / 60) % room.enemies.length | 0];
+  if (t % 60 === 0 && e)
+    for (const [ox, oy] of [[60, 0], [-60, 0], [0, 60], [0, -60]])
+      if (!room.collides(e.x + ox, e.y + oy, 6)) {
+        p.x = e.x + ox;
+        p.y = e.y + oy;
+        break;
+      }
+  const a = e ? Math.atan2(e.y - p.y, e.x - p.x) : 0;
+  room.handleBinary(p, encodeInputs(latest?.tick ?? 0, [quantizeInput(++seq, 0, 0, a, t % 3 === 0, false, false, 0)]));
   room.step();
   room.sendSnapshots();
 }
