@@ -64,7 +64,14 @@ export class Hud {
       const itemsKey = me.items.join();
       if (itemsKey !== this.lastItems) {
         this.lastItems = itemsKey;
-        $('items').innerHTML = me.items.map((k) => `<span title="${ITEM_INFO[k].desc}">${ITEM_INFO[k].name}</span>`).join('');
+        const counts = new Map<string, number>();
+        for (const k of me.items) counts.set(k, (counts.get(k) ?? 0) + 1);
+        $('items').innerHTML = [...counts]
+          .map(([k, n]) => {
+            const info = ITEM_INFO[k as keyof typeof ITEM_INFO];
+            return `<span title="${info.desc}">${info.name}${n > 1 ? ` ×${n}` : ''}</span>`;
+          })
+          .join('');
       }
       const ck = me.choices ? me.choices.join() + me.pending : '';
       if (ck !== this.lastChoiceKey) {

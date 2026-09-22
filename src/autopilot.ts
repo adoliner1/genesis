@@ -71,12 +71,14 @@ export class Autopilot {
 
     let goals: { x: number; y: number }[] = [];
     const nearItem = s.items.find((i) => Math.hypot(i.x - me.x, i.y - me.y) < 120 && (i.k !== 'potion' || me.hp < me.maxHp));
-    if (nearItem && (!target || realD > 60)) goals = [nearItem];
+    const downed = s.players.filter((p) => p.id !== myId && p.down);
+    if (downed.length && (!target || realD > 70)) goals = downed;
+    else if (nearItem && (!target || realD > 60)) goals = [nearItem];
     else if (target && !(seen && realD < 110)) goals = [target];
     else if (!target && s.stairs) {
       const m = this.map()!;
       for (let i = 0; i < m.tiles.length; i++) if (m.tiles[i] === T.Stairs) goals.push({ x: (i % m.w) * TILE + 8, y: Math.floor(i / m.w) * TILE + 8 });
-    } else if (!target) goals = s.players.filter((p) => p.id !== myId && p.down);
+    }
 
     if (goals.length) {
       if (now - this.lastPath > 150) {

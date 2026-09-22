@@ -137,7 +137,7 @@ const ENEMY_DEFS: Record<EnemyKind, { hp: number; r: number; mass: number; speed
   grunt: { hp: 30, r: 6, mass: 1, speed: 58, xp: 6 },
   archer: { hp: 22, r: 5, mass: 0.9, speed: 48, xp: 8 },
   brute: { hp: 70, r: 8, mass: 2.4, speed: 40, xp: 14 },
-  boss: { hp: 2600, r: 14, mass: 12, speed: 42, xp: 0 },
+  boss: { hp: 2200, r: 14, mass: 12, speed: 42, xp: 0 },
 };
 
 const len = (x: number, y: number) => Math.hypot(x, y);
@@ -183,6 +183,11 @@ export class Room {
     const sy = anchor ? anchor.y : this.map.spawn.y;
     p.x = p.safeX = sx + (c % 2 ? 8 : -8);
     p.y = p.safeY = sy + (c > 1 ? 8 : 0);
+    const partyLvl = Math.max(0, ...[...this.players.values()].map((o) => o.lvl));
+    const target = Math.max(partyLvl, 1 + (this.floor - 1) * 2);
+    while (p.lvl < target) this.gainXp(p, p.xpNext - p.xp);
+    const passives: ItemKind[] = ['twin', 'bounce', 'heavy', 'fang', 'boots', 'pierce'];
+    for (let i = 0; i < (this.floor - 1) * 2; i++) this.applyItem(p, passives[Math.floor(Math.random() * passives.length)]);
     this.players.set(p.id, p);
     for (const e of this.enemies)
       if (e.k === 'boss' && e.hp === e.maxHp) e.hp = e.maxHp = Math.round(ENEMY_DEFS.boss.hp * (0.6 + 0.4 * this.players.size));
@@ -1144,7 +1149,7 @@ export class Room {
           }
         }
         for (const br of this.barrels) {
-          if (br.fuse < 0 && len(br.x - b.x, br.y - b.y) < 7 + b.r) {
+          if (!b.enemy && br.fuse < 0 && len(br.x - b.x, br.y - b.y) < 7 + b.r) {
             br.fuse = 1;
             br.kicker = b.pid;
             continue outer;
