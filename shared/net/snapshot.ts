@@ -17,24 +17,30 @@ export const MSG_PING = 2;
 
 type Field = 'u8' | 'u16' | 'i16' | 'u32' | 'uv';
 
-export const P = { x: 0, y: 1, aim: 2, hp: 3, maxHp: 4, flags: 5, rev: 6, lvl: 7, xp: 8, xpNext: 9, kills: 10, pending: 11, dashCd: 12, c: 13 } as const;
-export const PF = { down: 1, dash: 2, inv: 4, off: 8 } as const;
+export const P = { x: 0, y: 1, aim: 2, hp: 3, maxHp: 4, flags: 5, rev: 6, lvl: 7, xp: 8, xpNext: 9, kills: 10, pending: 11, c: 12, k: 13, mode: 14, draw: 15 } as const;
+export const PF = { down: 1, block: 2, inv: 4, off: 8 } as const;
+export const BF = { enemy: 1, arrow: 16 } as const;
 export const E = { k: 0, x: 1, y: 2, hp: 3, maxHp: 4, a: 5, s: 6 } as const;
 export const B = { t0: 0, x: 1, y: 2, vx: 3, vy: 4, flags: 5, o: 6, sq: 7, i: 8 } as const;
 export const X = { x: 0, y: 1 } as const;
 export const I = { k: 0, x: 1, y: 2 } as const;
+export const TR = { x: 0, y: 1, c: 2 } as const;
 
 const SCHEMAS: Field[][] = [
-  ['u16', 'u16', 'u8', 'uv', 'uv', 'u8', 'u8', 'u8', 'uv', 'uv', 'uv', 'u8', 'u8', 'u8'],
+  ['u16', 'u16', 'u8', 'uv', 'uv', 'u8', 'u8', 'u8', 'uv', 'uv', 'uv', 'u8', 'u8', 'u8', 'u8', 'u8'],
   ['u8', 'u16', 'u16', 'uv', 'uv', 'u8', 'u8'],
   ['u32', 'u16', 'u16', 'i16', 'i16', 'u8', 'uv', 'uv', 'u8'],
   ['u16', 'u16'],
   ['u8', 'u16', 'u16'],
+  ['u16', 'u16', 'u8'],
 ];
-export const TABLES = { players: 0, enemies: 1, bullets: 2, barrels: 3, items: 4 } as const;
+export const TABLES = { players: 0, enemies: 1, bullets: 2, barrels: 3, items: 4, traps: 5 } as const;
 
 export const ENEMY_KINDS = ['grunt', 'archer', 'brute', 'boss'] as const;
-export const ITEM_KINDS = ['potion', 'twin', 'bounce', 'heavy', 'fang', 'boots', 'pierce'] as const;
+export const ITEM_KINDS = ['potion', 'sigil', 'ricochet', 'heavy', 'fang', 'boots', 'charm'] as const;
+export const CHAR_WIRE = ['archer', 'knight'] as const;
+/** Enemy state byte: low bits are the AI state, this bit marks a rooted enemy. */
+export const ES_ROOTED = 8;
 const PHASES: Phase[] = ['play', 'over', 'win'];
 
 export const qpos = (v: number) => Math.max(0, Math.min(65535, Math.round(v * 8)));

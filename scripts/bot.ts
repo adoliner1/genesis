@@ -3,7 +3,7 @@
 import WebSocket from 'ws';
 import type { ServerMsg } from '../shared/protocol.ts';
 import { E, MSG_SNAP, P, decodeSnapshot, dpos, encodeInputs, type World } from '../shared/net/snapshot.ts';
-import { quantizeInput, type PlayerInput } from '../shared/sim/input.ts';
+import { BTN_A, BTN_A_PRESS, BTN_B_PRESS, BTN_MOVE, BTN_MOVE_PRESS, quantizeInput, type PlayerInput } from '../shared/sim/input.ts';
 
 const URL = process.env.WS ?? 'ws://localhost:47291/ws';
 const SECONDS = Number(process.env.SECONDS ?? 20);
@@ -17,7 +17,7 @@ interface Stats {
   events: Record<string, number>;
 }
 
-function bot(name: string, code?: string): Promise<{ code: string; stats: Stats }> {
+function bot(name: string, char: 'archer' | 'knight', code?: string): Promise<{ code: string; stats: Stats }> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(URL);
     let id = 0;
@@ -28,7 +28,7 @@ function bot(name: string, code?: string): Promise<{ code: string; stats: Stats 
     const worlds = new Map<number, World>();
     const recent: PlayerInput[] = [];
     const stats: Stats = { snaps: 0, floors: 0, bytes: 0, fullBytes: 0, misses: 0, events: {} };
-    ws.on('open', () => ws.send(JSON.stringify(code ? { t: 'join', code, name } : { t: 'create', name })));
+    ws.on('open', () => ws.send(JSON.stringify(code ? { t: 'join', code, name, char } : { t: 'create', name, char })));
     ws.on('message', (raw, isBinary) => {
       if (isBinary) {
         const buf = new Uint8Array(raw as Buffer);
@@ -70,7 +70,11 @@ function bot(name: string, code?: string): Promise<{ code: string; stats: Stats 
         }
       }
       const t = Date.now() / 1000;
-      recent.push(quantizeInput(++seq, Math.cos(t), Math.sin(t * 0.7), aim, best < 150, Math.random() < 0.02, best < 25, last.tick - 2));
+      // Archer draws for ~1s then releases; both sprint/bash and use their secondary now and then.
+      const held = best < 150 && seq % 40 < 30;
+      const press = Math.random() < 0.02;
+      const buttons = (held ? BTN_A : 0) | (best < 25 ? BTN_A_PRESS : 0) | (Math.random() < 0.01 ? BTN_B_PRESS : 0) | (press ? BTN_MOVE | BTN_MOVE_PRESS : 0);
+      recent.push(quantizeInput(++seq, Math.cos(t), Math.sin(t * 0.7), aim, buttons, last.tick - 2));
       if (recent.length > 4) recent.shift();
       ws.send(encodeInputs(last.tick, recent));
     }, 1000 / 30);
@@ -82,8 +86,8 @@ function bot(name: string, code?: string): Promise<{ code: string; stats: Stats 
   });
 }
 
-const a = await bot('BotA');
-const b = await bot('BotB', a.code);
+const a = await bot('BotA', 'archer');
+const b = await bot('BotB', 'knight', a.code);
 console.log('room', a.code);
 for (const [n, s] of [['A', a.stats] as const, ['B', b.stats] as const]) {
   console.log(n, {

@@ -1,17 +1,21 @@
 import Phaser from 'phaser';
 import {
-  ITEM_INFO,
+  ENEMY_R,
   PLAYER_COLORS,
+  itemInfo,
   T,
   TILE,
   spikeState,
   type FloorMsg,
   type GameEvent,
+  type CharKind,
   type PlayerSnap,
   type WorldView,
 } from '../shared/protocol';
 import { parseTiles } from '../shared/sim/map';
-import type { StepResult } from '../shared/sim/movement';
+import { MODE, type MoveState, type StepResult } from '../shared/sim/movement';
+import { trapSpot } from '../shared/sim/kits/archer';
+import { SHIELD_ARC } from '../shared/sim/kits/knight';
 import { makeTextures, renderMap } from './sprites';
 import { Fx } from './fx';
 import { sfx } from './audio';
@@ -40,6 +44,13 @@ interface View {
   ghost?: boolean;
   /** Seconds since the server stopped sending it; it fades out instead of vanishing. */
   gone?: number;
+  /** Players: smoothed on-screen velocity, and when the last slash / bash started. */
+  mvx?: number;
+  mvy?: number;
+  swingAt?: number;
+  swingArc?: number;
+  swingDir?: number;
+  bashAt?: number;
 }
 
 const LINGER = 0.15;
@@ -70,6 +81,8 @@ export class GameScene extends Phaser.Scene {
   bullets = new Map<number, View>();
   barrels = new Map<number, View>();
   items = new Map<number, View>();
+  traps = new Map<number, View>();
+  localTraps: { x: number; y: number; until: number; img: Phaser.GameObjects.Image }[] = [];
   overlay!: Phaser.GameObjects.Graphics;
   cross!: Phaser.GameObjects.Image;
   arrows: Phaser.GameObjects.Image[] = [];
@@ -85,8 +98,10 @@ export class GameScene extends Phaser.Scene {
   zoomPunch = 0;
   baseZoom = 3;
   hitstopUntil = 0;
-  wantDash = false;
-  wantKick = false;
+  pressA = false;
+  pressB = false;
+  pressMove = false;
+  wasFull = false;
   aim = 0;
   lavaFrame = 0;
   floorCount = 0;
@@ -114,12 +129,14 @@ export class GameScene extends Phaser.Scene {
     this.input.mouse?.disableContextMenu();
     const kb = this.input.keyboard!;
     this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,SHIFT,F,ONE,TWO,THREE') as Record<string, Phaser.Input.Keyboard.Key>;
-    kb.on('keydown-SPACE', () => (this.wantDash = true));
-    kb.on('keydown-SHIFT', () => (this.wantDash = true));
-    kb.on('keydown-F', () => (this.wantKick = true));
+    const latch = (f: () => void) => (e: KeyboardEvent) => !e.repeat && f();
+    kb.on('keydown-SPACE', latch(() => (this.pressMove = true)));
+    kb.on('keydown-SHIFT', latch(() => (this.pressMove = true)));
+    kb.on('keydown-F', latch(() => (this.pressB = true)));
     (['ONE', 'TWO', 'THREE'] as const).forEach((k, i) => kb.on(`keydown-${k}`, () => this.choose(i)));
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      if (p.rightButtonDown()) this.wantKick = true;
+      if (p.rightButtonDown()) this.pressB = true;
+      if (p.leftButtonDown()) this.pressA = true;
     });
     this.boot.hud.onChoose = (i) => this.choose(i);
     this.boot.hud.onRestart = () => this.client.net.sendJson({ t: 'restart' });
@@ -144,7 +161,8 @@ export class GameScene extends Phaser.Scene {
     };
     this.client.hooks = {
       input: () => this.sampleInput(),
-      predicted: (res, x, y, aim) => this.onPredicted(res, x, y, aim),
+      predicted: (res, s) => this.onPredicted(res, s),
+      parried: (x, y, deflected) => this.onParried(x, y, deflected),
       impact: (x, y, what, id) => this.onImpact(x, y, what, id),
       event: (e) => this.onEvent(e),
       floor: (f) => this.loadFloor(f),
@@ -165,31 +183,34 @@ export class GameScene extends Phaser.Scene {
 
   /** Called by the net client once per fixed tick. */
   sampleInput(): RawInput {
-    const dash = this.wantDash;
-    const kick = this.wantKick;
-    this.wantDash = this.wantKick = false;
-    if (this.auto) {
-      const a = { ...this.auto, dash: this.auto.dash || dash };
-      this.auto.dash = this.auto.kick = false;
-      return a;
-    }
+    const aPress = this.pressA;
+    const bPress = this.pressB;
+    const movePress = this.pressMove;
+    this.pressA = this.pressB = this.pressMove = false;
+    const me = this.client.pred.state;
+    const alive = !!me && !me.down;
+    if (this.auto) return { ...this.auto, aPress: aPress && alive, bPress: bPress && alive, movePress };
     const k = this.keys;
     const pointer = this.input.activePointer;
-    const me = this.client.pred.state;
     return {
       mx: (k.D.isDown || k.RIGHT.isDown ? 1 : 0) - (k.A.isDown || k.LEFT.isDown ? 1 : 0),
       my: (k.S.isDown || k.DOWN.isDown ? 1 : 0) - (k.W.isDown || k.UP.isDown ? 1 : 0),
       aim: this.aim,
-      shoot: pointer.leftButtonDown() && pointer.isDown && !!me && !me.down,
-      dash,
-      kick,
+      a: pointer.leftButtonDown() && pointer.isDown && alive,
+      aPress: aPress && alive,
+      b: (pointer.rightButtonDown() || k.F.isDown) && alive,
+      bPress: bPress && alive,
+      move: k.SHIFT.isDown || k.SPACE.isDown,
+      movePress,
     };
   }
 
   loadFloor(f: FloorMsg) {
     const tiles = parseTiles(f.tiles);
     this.map = { w: f.w, h: f.h, tiles, boss: f.boss };
-    for (const m of [this.enemies, this.bullets, this.barrels, this.items]) {
+    for (const t of this.localTraps) t.img.destroy();
+    this.localTraps = [];
+    for (const m of [this.enemies, this.bullets, this.barrels, this.items, this.traps]) {
       for (const v of m.values()) this.destroyView(v);
       m.clear();
     }
@@ -278,7 +299,12 @@ export class GameScene extends Phaser.Scene {
       }
       v.ghost = false;
       v.gone = 0;
-      if (dt > 0) v.spd += (Math.hypot(o.x - v.x, o.y - v.y) / dt - v.spd) * Math.min(1, dt * 15);
+      if (dt > 0) {
+        const k = Math.min(1, dt * 15);
+        v.spd += (Math.hypot(o.x - v.x, o.y - v.y) / dt - v.spd) * k;
+        v.mvx = (v.mvx ?? 0) + ((o.x - v.x) / dt - (v.mvx ?? 0)) * k;
+        v.mvy = (v.mvy ?? 0) + ((o.y - v.y) / dt - (v.mvy ?? 0)) * k;
+      }
       v.x = o.x;
       v.y = o.y;
       upd?.(v, o);
@@ -318,15 +344,16 @@ export class GameScene extends Phaser.Scene {
       this.players,
       players,
       (p) => {
-        const body = this.add.image(0, 0, `player${p.c}`).setOrigin(0.5, 0.8);
-        const gun = this.add.image(0, 0, 'gun').setOrigin(0.15, 0.5);
+        const body = this.add.image(0, 0, `hero_${p.k}${p.c}`).setOrigin(0.5, 0.8);
+        const wpn = p.k === 'knight' ? this.add.image(0, 0, 'sword').setOrigin(0.22, 0.5) : this.add.image(0, 0, 'bow').setOrigin(0.3, 0.5);
+        const shield = this.add.image(0, 0, `shield${p.c}`).setOrigin(0.5, 0.5).setVisible(p.k === 'knight');
         const name = this.add
           .text(0, 0, p.name, { fontFamily: 'monospace', fontSize: '5px', color: PLAYER_COLORS[p.c], stroke: '#000', strokeThickness: 2 })
           .setOrigin(0.5, 1)
           .setResolution(4)
           .setDepth(955);
         const shadow = this.add.ellipse(0, 0, 10, 4, 0x000000, 0.35).setDepth(4);
-        return this.view(body, p.x, p.y, 'player', [gun, name, shadow]);
+        return this.view(body, p.x, p.y, p.k, [wpn, name, shadow, shield]);
       },
       (v, p) => {
         const name = v.extra![1] as Phaser.GameObjects.Text;
@@ -352,25 +379,21 @@ export class GameScene extends Phaser.Scene {
       this.bullets,
       bullets,
       (b) => {
-        const spr = this.add.image(0, 0, b.e ? 'ebullet' : 'bullet').setDepth(800);
-        const glow = this.add
-          .image(0, 0, 'glow')
-          .setTint(b.e ? 0xff4fd8 : 0xffb13b)
-          .setScale(b.e ? 0.35 : 0.25)
-          .setAlpha(0.8)
-          .setBlendMode(Phaser.BlendModes.ADD)
-          .setDepth(799);
+        const spr = this.add.image(0, 0, this.bulletTex(b)).setDepth(800);
+        const glow = this.add.image(0, 0, 'glow').setAlpha(0.8).setBlendMode(Phaser.BlendModes.ADD).setDepth(799);
         return this.view(spr, b.x, b.y, b.e ? 'eb' : 'pb', [glow]);
       },
       (v, b) => {
-        const want = b.e ? 'ebullet' : 'bullet';
-        if (v.spr.texture.key !== want) {
+        const want = this.bulletTex(b);
+        const glow = v.extra![0] as Phaser.GameObjects.Image;
+        if (v.spr.texture.key !== want || !v.spd) {
           v.spr.setTexture(want);
-          (v.extra![0] as Phaser.GameObjects.Image).setTint(b.e ? 0xff4fd8 : 0xffb13b);
+          glow.setTint(b.e ? 0xff4fd8 : b.arrow ? 0xfff0c0 : 0xffb13b).setScale(b.e ? 0.35 : b.arrow ? 0.18 : 0.3);
+          v.spd = 1;
         }
         v.vx = b.vx;
         v.vy = b.vy;
-        v.spr.setScale(b.r > 2 ? 1.4 : 1);
+        v.spr.setScale(b.arrow ? (b.r > 2 ? 1.25 : 1) : b.r > 2 ? 1.4 : 1);
       },
     );
     this.sync(this.barrels, view.barrels, (b) => this.view(this.add.image(0, 0, 'barrel').setOrigin(0.5, 0.7), b.x, b.y, 'barrel'), undefined, 0, true);
@@ -391,6 +414,24 @@ export class GameScene extends Phaser.Scene {
       0,
       true,
     );
+    this.sync(this.traps, view.traps, (t) => this.view(this.add.image(0, 0, 'trap').setOrigin(0.5, 1).setDepth(6), t.x, t.y, 'trap'));
+    const now = performance.now();
+    this.localTraps = this.localTraps.filter((t) => {
+      const real = view.traps.some((r) => Math.hypot(r.x - t.x, r.y - t.y) < 8);
+      if (real || now > t.until) {
+        t.img.destroy();
+        return false;
+      }
+      return true;
+    });
+  }
+
+  private bulletTex(b: RenderBullet) {
+    return b.e ? 'ebullet' : b.arrow ? 'arrowshot' : 'bullet';
+  }
+
+  private myChar(): CharKind {
+    return this.client.pred.char;
   }
 
   private onLatest(s: WorldView) {
@@ -434,10 +475,29 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ---------- instant local feedback ----------
-  private onPredicted(res: StepResult, x: number, y: number, aim: number) {
-    if (res.dashed) this.fxDash(x, y, this.client.myId);
-    if (res.fired) this.fxShot(x, y, aim, true);
-    if (res.kicked) this.fxKick(x + Math.cos(aim) * 8, y + Math.sin(aim) * 8, aim, true);
+  private onPredicted(res: StepResult, s: MoveState) {
+    const me = this.client.myId;
+    const st = this.client.pred.stats;
+    if (res.fire) this.fxShot(s.x, s.y, s.aim, true, res.power);
+    if (res.slash) this.fxSlash(me, s.x, s.y, s.aim, st.arc, st.reach, true);
+    if (res.ability) {
+      if (this.myChar() === 'knight') this.fxBash(me, s.x, s.y, s.aim, true);
+      else this.fxSprint(s.x, s.y);
+    }
+    if (res.slide) this.fxSlide(me, s.x, s.y, true);
+    if (res.trap && this.client.map) {
+      const [x, y] = trapSpot(this.client.map, s.x, s.y, s.aim);
+      this.fxTrapThrow(s.x, s.y, x, y);
+      const img = this.add.image(x, y, 'trap').setOrigin(0.5, 1).setDepth(6).setAlpha(0.7);
+      this.localTraps.push({ x, y, until: performance.now() + this.client.rtt + 400, img });
+    }
+  }
+
+  private onParried(x: number, y: number, deflected: boolean) {
+    this.fx.sparks(x, y, deflected ? 10 : 6, deflected ? 0xffffff : 0xffd23f, deflected ? 140 : 90);
+    if (deflected) this.fx.ring(x, y, 8, 0xffffff);
+    sfx.block();
+    this.trauma = Math.min(1, this.trauma + 0.1);
   }
 
   private onImpact(x: number, y: number, what: 'wall' | 'enemy' | 'barrel', id: number) {
@@ -447,75 +507,164 @@ export class GameScene extends Phaser.Scene {
       this.fx.sparks(x, y, 4, 0xffffff, 70);
       sfx.hit();
     } else {
-      this.fx.sparks(x, y, 5, 0xffe066, 80);
+      this.fx.sparks(x, y, 4, 0xe8d8b0, 60);
       sfx.spark();
     }
   }
 
-  private fxShot(x: number, y: number, a: number, local: boolean) {
-    const mx = x + Math.cos(a) * 10;
-    const my = y - 3 + Math.sin(a) * 10;
-    const fl = this.add.image(mx, my, 'flash').setDepth(850).setRotation(a).setBlendMode(Phaser.BlendModes.ADD);
-    const gl = this.add.image(mx, my, 'glow').setDepth(849).setTint(0xffb13b).setScale(0.7).setBlendMode(Phaser.BlendModes.ADD);
-    this.time.delayedCall(50, () => {
-      fl.destroy();
-      gl.destroy();
-    });
-    this.fx.casing(x, y, a);
-    sfx.shot(local);
+  private fxShot(x: number, y: number, a: number, local: boolean, power: number) {
+    const bx = x + Math.cos(a) * 8;
+    const by = y - 4 + Math.sin(a) * 8;
+    this.fx.sparks(bx, by, 2 + Math.round(power * 4), 0xfff0c0, 60 + power * 80);
+    if (power >= 1) this.fx.ring(bx, by, 5, 0xffffff);
+    sfx.shot(local, power);
     if (local) {
-      this.trauma = Math.min(1, this.trauma + 0.08);
-      this.kickX -= Math.cos(a) * 2.5;
-      this.kickY -= Math.sin(a) * 2.5;
+      this.trauma = Math.min(1, this.trauma + 0.03 + power * 0.08);
+      this.kickX -= Math.cos(a) * (1 + power * 2.5);
+      this.kickY -= Math.sin(a) * (1 + power * 2.5);
     }
   }
 
-  private fxKick(x: number, y: number, a: number, local: boolean) {
-    const g = this.add.graphics().setDepth(870);
-    const ax = x - Math.cos(a) * 8;
-    const ay = y - 3 - Math.sin(a) * 8;
-    g.lineStyle(4, 0xffffff, 1);
-    g.beginPath();
-    g.arc(ax, ay, 18, a - 1, a + 1);
-    g.strokePath();
-    g.lineStyle(2, 0xffd23f, 0.8);
-    g.beginPath();
-    g.arc(ax, ay, 24, a - 0.8, a + 0.8);
-    g.strokePath();
-    this.tweens.add({ targets: g, alpha: 0, scale: 1.08, duration: 180, onComplete: () => g.destroy() });
-    for (let i = 0; i < 10; i++) {
-      const aa = a + (Math.random() - 0.5) * 1.6;
-      this.fx.sparks(x + Math.cos(aa) * 14, y - 3 + Math.sin(aa) * 14, 1, 0xffffff, 90);
-    }
-    this.fx.smoke(x + Math.cos(a) * 12, y + Math.sin(a) * 12, 3, 8, 0x8a8090);
-    if (local) {
-      this.kickX += Math.cos(a) * 3;
-      this.kickY += Math.sin(a) * 3;
-      this.trauma = Math.min(1, this.trauma + 0.12);
-    }
-    sfx.kick();
-  }
-
-  private fxDash(x: number, y: number, pid: number) {
+  private fxSlash(pid: number, x: number, y: number, a: number, arc: number, reach: number, local: boolean) {
     const v = this.players.get(pid);
     if (v) {
-      const pl = this.client.latest?.players.find((p) => p.id === pid);
-      const tint = hex(PLAYER_COLORS[pl?.c ?? 0]);
-      for (let i = 0; i < 4; i++)
-        this.time.delayedCall(i * 30, () => {
-          const g = this.add.image(v.x, v.y, v.spr.texture.key).setOrigin(0.5, 0.8).setAlpha(0.5).setTintFill(tint).setDepth(9);
-          this.tweens.add({ targets: g, alpha: 0, duration: 220, onComplete: () => g.destroy() });
-        });
+      v.swingAt = performance.now();
+      v.swingArc = arc;
+      v.swingDir = -(v.swingDir ?? 1);
     }
-    this.fx.smoke(x, y + 2, 4, 6, 0x6a6070);
-    sfx.dash();
+    const g = this.add.graphics().setDepth(870);
+    const cy = y - 3;
+    const dir = v?.swingDir ?? 1;
+    const from = a - arc * dir;
+    const steps = 10;
+    for (let i = 0; i < steps; i++) {
+      const t0 = i / steps;
+      const t1 = (i + 1) / steps;
+      const a0 = from + 2 * arc * dir * t0;
+      const a1 = from + 2 * arc * dir * t1;
+      g.fillStyle(0xffffff, 0.25 + 0.6 * t1);
+      g.beginPath();
+      g.moveTo(x + Math.cos(a0) * reach * 0.45, cy + Math.sin(a0) * reach * 0.45);
+      g.lineTo(x + Math.cos(a0) * reach, cy + Math.sin(a0) * reach);
+      g.lineTo(x + Math.cos(a1) * reach, cy + Math.sin(a1) * reach);
+      g.lineTo(x + Math.cos(a1) * reach * 0.6, cy + Math.sin(a1) * reach * 0.6);
+      g.closePath();
+      g.fillPath();
+    }
+    g.lineStyle(1, 0xffd23f, 0.9).beginPath().arc(x, cy, reach + 1, a - arc, a + arc).strokePath();
+    this.tweens.add({ targets: g, alpha: 0, duration: 160, ease: 'Quad.easeIn', onComplete: () => g.destroy() });
+    sfx.slash(local);
+    if (local) {
+      this.kickX += Math.cos(a) * 2.5;
+      this.kickY += Math.sin(a) * 2.5;
+      this.trauma = Math.min(1, this.trauma + 0.08);
+    }
+  }
+
+  private afterimages(pid: number, n: number, gap: number) {
+    const v = this.players.get(pid);
+    if (!v) return;
+    const pl = this.client.latest?.players.find((p) => p.id === pid);
+    const tint = hex(PLAYER_COLORS[pl?.c ?? 0]);
+    for (let i = 0; i < n; i++)
+      this.time.delayedCall(i * gap, () => {
+        const g = this.add
+          .image(v.x, v.y, v.spr.texture.key)
+          .setOrigin(0.5, 0.8)
+          .setFlipX(v.spr.flipX)
+          .setRotation(v.spr.rotation)
+          .setAlpha(0.45)
+          .setTintFill(tint)
+          .setDepth(9);
+        this.tweens.add({ targets: g, alpha: 0, duration: 220, onComplete: () => g.destroy() });
+      });
+  }
+
+  private fxBash(pid: number, x: number, y: number, a: number, local: boolean) {
+    const v = this.players.get(pid);
+    if (v) v.bashAt = performance.now();
+    this.afterimages(pid, 4, 35);
+    this.fx.smoke(x - Math.cos(a) * 4, y + 2, 6, 6, 0x6a6070);
+    sfx.bash();
+    if (local) {
+      this.trauma = Math.min(1, this.trauma + 0.12);
+      this.kickX += Math.cos(a) * 3;
+      this.kickY += Math.sin(a) * 3;
+    }
+  }
+
+  private fxSlide(pid: number, x: number, y: number, local: boolean) {
+    this.afterimages(pid, 3, 45);
+    this.fx.smoke(x, y + 2, 8, 7, 0x8a8090);
+    sfx.slide();
+    if (local) this.trauma = Math.min(1, this.trauma + 0.05);
+  }
+
+  private fxSprint(x: number, y: number) {
+    this.fx.smoke(x, y + 2, 3, 4, 0x8a8090);
+  }
+
+  private fxTrapThrow(x0: number, y0: number, x: number, y: number) {
+    const a = Math.atan2(y - y0, x - x0);
+    const img = this.add.image(x0, y0 - 4, 'arrowshot').setRotation(a).setDepth(800);
+    this.tweens.add({
+      targets: img,
+      x,
+      y: y - 2,
+      duration: 90,
+      onComplete: () => {
+        img.destroy();
+        this.fx.sparks(x, y, 4, 0xc89050, 50);
+        sfx.trap();
+      },
+    });
   }
 
   onEvent(e: GameEvent) {
     const me = this.client.myId;
     switch (e.e) {
       case 'shot':
-        this.fxShot(e.x, e.y, e.a, false);
+        this.fxShot(e.x, e.y, e.a, false, e.pw);
+        break;
+      case 'slash':
+        this.fxSlash(e.p, e.x, e.y, e.a, e.arc, e.reach, false);
+        break;
+      case 'bash':
+        this.fxBash(e.p, e.x, e.y, e.a, false);
+        break;
+      case 'slide':
+        this.fxSlide(e.p, e.x, e.y, false);
+        break;
+      case 'sprint':
+        this.fxSprint(e.x, e.y);
+        break;
+      case 'trap':
+        this.fxTrapThrow(e.x0, e.y0, e.x, e.y);
+        break;
+      case 'snare': {
+        const v = this.enemies.get(e.id);
+        const x = v?.x ?? e.x;
+        const y = v?.y ?? e.y;
+        this.fx.ring(x, y, 10, 0xc89050);
+        this.fx.sparks(x, y, 10, 0xe8d8b0, 80);
+        this.popText(x, y - 6, 'PINNED', '#e8d8b0');
+        sfx.snare();
+        break;
+      }
+      case 'block':
+        this.fx.sparks(e.x, e.y - 3, e.broke ? 20 : 8, e.broke ? 0xff6a3a : 0xffd23f, e.broke ? 150 : 100);
+        if (e.broke) {
+          this.fx.ring(e.x, e.y - 3, 12, 0xff6a3a);
+          this.popText(e.x, e.y - 10, 'GUARD BREAK', '#ff6a3a');
+          sfx.guardBreak();
+        } else sfx.block();
+        if (e.p === me) this.trauma = Math.min(1, this.trauma + (e.broke ? 0.4 : 0.1));
+        break;
+      case 'shove':
+        this.fx.sparks(e.x, e.y - 3, 10, 0xffffff, 120);
+        this.fx.smoke(e.x, e.y, 4, 6, 0x8a8090);
+        this.shakeAt(e.x, e.y, 0.2);
+        sfx.slam();
         break;
       case 'eshot':
         sfx.eshot();
@@ -607,9 +756,10 @@ export class GameScene extends Phaser.Scene {
       case 'pickup': {
         this.fx.sparks(e.x, e.y, 18, e.k === 'potion' ? 0xff3355 : 0xffd23f, 90);
         this.fx.ring(e.x, e.y, 14, 0xffd23f);
-        this.popText(e.x, e.y - 6, ITEM_INFO[e.k].name, '#ffd23f');
+        const info = itemInfo(e.k, this.myChar());
+        this.popText(e.x, e.y - 6, info.name, '#ffd23f');
         sfx.pickup();
-        if (e.p === me) this.boot.hud.feed(`${ITEM_INFO[e.k].name}: ${ITEM_INFO[e.k].desc}`);
+        if (e.p === me) this.boot.hud.feed(`${info.name}: ${info.desc}`);
         break;
       }
       case 'level': {
@@ -622,12 +772,6 @@ export class GameScene extends Phaser.Scene {
         if (e.p === me) sfx.level();
         break;
       }
-      case 'kick':
-        this.fxKick(e.x, e.y, e.a, false);
-        break;
-      case 'dash':
-        this.fxDash(e.x, e.y, e.p);
-        break;
       case 'burn':
         this.fx.embers(e.x, e.y, 6);
         sfx.burn();
@@ -708,7 +852,10 @@ export class GameScene extends Phaser.Scene {
     if (this.bot && latest && myPos) {
       const meSnap = latest.players.find((p) => p.id === c.myId);
       const players = latest.players.map((p) => (p.id === c.myId ? { ...p, x: myPos[0], y: myPos[1] } : p));
-      this.auto = meSnap ? this.bot.step({ ...latest, players, enemies: view?.enemies ?? latest.enemies, bullets }, c.myId, now) : null;
+      this.auto = meSnap ? this.bot.step({ ...latest, players, enemies: view?.enemies ?? latest.enemies, bullets }, c.myId, now, c.pred.state, c.pred.stats) : null;
+      if (this.auto?.aPress) this.pressA = true;
+      if (this.auto?.bPress) this.pressB = true;
+      if (this.auto?.movePress) this.pressMove = true;
     }
 
     if (view && latest) this.drawEntities(view, latest, dt, this.aim);
@@ -734,6 +881,8 @@ export class GameScene extends Phaser.Scene {
 
     this.animateTiles(now);
     this.fx.update(dt);
+    const ps = c.pred.state;
+    if (ps) this.boot.hud.kit(ps, c.pred.stats, c.pred.char);
     this.drawIndicators(latest, me);
     this.updateCamTag(latest);
     this.boot.debug.update(now);
@@ -757,38 +906,98 @@ export class GameScene extends Phaser.Scene {
     const t = performance.now() / 1000;
     const myId = this.client.myId;
     const pred = this.client.pred.state;
+    const now = performance.now();
+    const st = this.client.pred.stats;
     for (const sp of s.players) {
       const v = this.players.get(sp.id);
       if (!v) continue;
       const mine = sp.id === myId;
       const p: PlayerSnap = mine ? latest.players.find((q) => q.id === myId) ?? sp : sp;
-      const [gun, name, shadow] = v.extra as [Phaser.GameObjects.Image, Phaser.GameObjects.Text, Phaser.GameObjects.Ellipse];
+      const [wpn, name, shadow, shield] = v.extra as [Phaser.GameObjects.Image, Phaser.GameObjects.Text, Phaser.GameObjects.Ellipse, Phaser.GameObjects.Image];
+      const ps = mine ? pred : null;
       const aim = mine ? myAim : p.aim;
-      const down = mine && pred ? pred.down : p.down;
-      const dashing = mine && pred ? pred.dashing > 0 : p.dash;
+      const down = ps ? ps.down : p.down;
+      const mode = ps ? ps.mode : p.mode;
+      const knight = v.kind === 'knight';
+      const block = ps ? ps.block > 0 || (knight && ps.mode === MODE.bash) : p.block;
+      const drawF = ps ? (knight ? 0 : Math.min(1, ps.draw / st.drawTicks)) : p.draw;
+      const sliding = mode === MODE.slide || mode === MODE.skid;
+      const sprinting = !knight && (mode === MODE.sprint || mode === MODE.coast);
+      const bashing = knight && mode === MODE.bash;
       const moving = v.spd > 12;
-      const bob = moving && !down ? Math.abs(Math.sin(t * 16 + p.id)) : 0;
-      v.spr.setPosition(v.x, v.y - bob * 1.5);
-      v.spr.setFlipX(Math.cos(aim) < 0);
-      v.spr.setScale(1 + bob * 0.06, 1 - bob * 0.08);
-      v.spr.setRotation(down ? Math.PI / 2 : moving ? Math.sin(t * 16 + p.id) * 0.08 : 0);
-      v.spr.setDepth(10 + v.y * 0.01);
+      const bob = moving && !down && !sliding && !bashing ? Math.abs(Math.sin(t * (sprinting ? 22 : 16) + p.id)) : 0;
+      const mvx = v.mvx ?? 0;
+      const flip = sprinting || sliding ? mvx < -5 || (Math.abs(mvx) <= 5 && Math.cos(aim) < 0) : Math.cos(aim) < 0;
+      const side = flip ? -1 : 1;
+      const hop = bashing ? Math.sin(Math.min(1, (now - (v.bashAt ?? now)) / 233) * Math.PI) * 4 : 0;
+      v.spr.setPosition(v.x, v.y - bob * 1.5 - hop);
+      v.spr.setFlipX(flip);
+      if (sliding) v.spr.setScale(1.12, 0.84);
+      else v.spr.setScale(1 + bob * 0.06, 1 - bob * 0.08);
+      let rot = moving ? Math.sin(t * 16 + p.id) * 0.08 : 0;
+      if (down) rot = Math.PI / 2;
+      else if (sliding) rot = -0.5 * side;
+      else if (sprinting) rot = 0.2 * side;
+      else if (bashing) rot = 0.28 * side;
+      v.spr.setRotation(rot);
+      const depth = 10 + v.y * 0.01;
+      v.spr.setDepth(depth);
       v.flash -= dt;
       if (down) v.spr.setTint(0x6a6070);
       else if (v.flash > 0) v.spr.setTintFill(0xffffff);
       else v.spr.clearTint();
-      v.spr.setAlpha(p.off ? 0.35 : p.inv && !down && Math.floor(t * 20) % 2 ? 0.45 : dashing ? 0.7 : 1);
-      gun.setVisible(!down);
-      gun.setPosition(v.x + Math.cos(aim) * 3, v.y - 4 + Math.sin(aim) * 3);
-      gun.setRotation(aim).setFlipY(Math.cos(aim) < 0).setDepth(10 + v.y * 0.01 + (Math.sin(aim) > 0 ? 0.001 : -0.001));
+      v.spr.setAlpha(p.off ? 0.35 : p.inv && !down && Math.floor(t * 20) % 2 ? 0.45 : 1);
+      wpn.setVisible(!down);
+      const hx = v.x + Math.cos(aim) * 3;
+      const hy = v.y - 4 - hop + Math.sin(aim) * 3;
+      if (!knight) {
+        if (sprinting) wpn.setPosition(v.x - side * 2, v.y - 6 - bob).setRotation(-Math.PI / 2 + side * 0.5);
+        else wpn.setPosition(hx, hy).setRotation(aim);
+        wpn.setDepth(depth + (Math.sin(aim) > 0 ? 0.001 : -0.001));
+        if (drawF > 0 && !down && !sprinting) this.drawBowString(o, hx, hy, aim, drawF, t);
+        if (mine && drawF >= 1 && !this.wasFull) sfx.fullDraw();
+        if (mine) this.wasFull = drawF >= 1;
+      } else {
+        const sw = v.swingAt ? (now - v.swingAt) / 140 : 1;
+        if (sw < 1) {
+          const arc = v.swingArc ?? 1.2;
+          const dir = v.swingDir ?? 1;
+          const k = 1 - (1 - sw) * (1 - sw);
+          const a = aim - arc * dir + 2 * arc * dir * k;
+          wpn.setPosition(v.x + Math.cos(a) * 3, v.y - 4 - hop + Math.sin(a) * 3).setRotation(a);
+        } else wpn.setPosition(v.x + side * 3, v.y - 3 - hop).setRotation(aim + side * 1.05);
+        wpn.setFlipY(Math.cos(wpn.rotation) < 0);
+        shield.setVisible(!down);
+        if (block) {
+          shield
+            .setPosition(v.x + Math.cos(aim) * 6, v.y - 4 - hop + Math.sin(aim) * 4)
+            .setScale(1)
+            .setDepth(depth + (Math.sin(aim) > -0.4 ? 0.002 : -0.002));
+          wpn.setDepth(depth - 0.001);
+          o.lineStyle(1, hex(PLAYER_COLORS[p.c]), 0.5).beginPath().arc(v.x, v.y - 3, 11, aim - SHIELD_ARC, aim + SHIELD_ARC).strokePath();
+        } else {
+          shield.setPosition(v.x - side * 4, v.y - 4 - hop - bob).setScale(0.8).setDepth(depth - 0.002);
+          wpn.setDepth(depth + 0.001);
+        }
+      }
+      if (sliding && moving && Math.random() < 0.6) this.fx.smoke(v.x - mvx * 0.02, v.y + 1, 1, 3, knight ? 0x9a9098 : 0x8a8090);
+      if (knight && mode === MODE.skid && Math.random() < 0.5) this.fx.sparks(v.x, v.y + 1, 1, 0xffe066, 50);
+      if (sprinting && moving && Math.random() < 0.25) this.fx.smoke(v.x, v.y + 1, 1, 2, 0x6a6070);
       name.setPosition(v.x, v.y - 16).setVisible(!mine);
-      shadow.setPosition(v.x, v.y + 1);
+      shadow.setPosition(v.x, v.y + 1).setScale(sliding ? 1.3 : bashing ? 0.8 : 1, 1);
       if (!mine && !p.down) this.bar(o, v.x, v.y - 14, 14, p.hp / p.maxHp, 0xff3355);
       if (p.down) {
         o.lineStyle(2, 0x000000, 0.6).strokeCircle(v.x, v.y - 2, 10);
         o.lineStyle(2, 0x7dff8a, 1).beginPath().arc(v.x, v.y - 2, 10, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * p.rev).strokePath();
       }
     }
+    for (const tr of s.traps) {
+      const tv = this.traps.get(tr.id);
+      if (!tv) continue;
+      o.lineStyle(1, hex(PLAYER_COLORS[tr.c]), 0.35 + Math.sin(t * 5) * 0.15).strokeEllipse(tv.x, tv.y, 12, 6);
+      tv.spr.setPosition(tv.x, tv.y).setDepth(6 + tv.y * 0.001);
+    }
+    for (const lt of this.localTraps) o.lineStyle(1, 0xffffff, 0.3).strokeEllipse(lt.x, lt.y, 12, 6);
     for (const e of s.enemies) {
       const v = this.enemies.get(e.id);
       if (!v) continue;
@@ -818,6 +1027,10 @@ export class GameScene extends Phaser.Scene {
       v.spr.setAlpha(fa).setVisible(fa > 0);
       shadow.setPosition(v.x, v.y + 1).setAlpha(fa);
       if (e.hp < e.maxHp && e.k !== 'boss' && fa > 0) this.bar(o, v.x, v.y - (e.k === 'brute' ? 16 : 13), 12, e.hp / e.maxHp, 0xff3355, fa);
+      if (e.rooted && fa > 0) {
+        o.lineStyle(1, 0xc89050, 0.9 * fa).strokeEllipse(v.x, v.y + 1, ENEMY_R[e.k] * 2 + 6, 6);
+        o.lineStyle(1, 0xe8d8b0, 0.6 * fa).strokeEllipse(v.x, v.y + 1, ENEMY_R[e.k] * 2 + 2, 4);
+      }
     }
     for (const v of this.enemies.values())
       if (v.gone) {
@@ -843,6 +1056,21 @@ export class GameScene extends Phaser.Scene {
       o.lineStyle(1, 0xffffff, 0.7).strokeCircle(ss.x, ss.y - 3, 6);
       o.lineStyle(1, 0xffffff, 0.35).lineBetween(ss.x - 3, ss.y - 3, ss.x + 3, ss.y - 3);
     }
+  }
+
+  /** Bowstring pulled back by the draw fraction, with the nocked arrow; glints at full draw. */
+  drawBowString(o: Phaser.GameObjects.Graphics, hx: number, hy: number, aim: number, f: number, t: number) {
+    const c = Math.cos(aim);
+    const sn = Math.sin(aim);
+    const at = (fx: number, fy: number): [number, number] => [hx + c * fx - sn * fy, hy + sn * fx + c * fy];
+    const [t1x, t1y] = at(-1.5, -5);
+    const [t2x, t2y] = at(-1.5, 5);
+    const [px, py] = at(-1.5 - f * 4.5, 0);
+    o.lineStyle(0.5, 0xe8e0c8, 1).lineBetween(t1x, t1y, px, py).lineBetween(t2x, t2y, px, py);
+    const [ax, ay] = at(5.5 - f * 4.5, 0);
+    o.lineStyle(0.8, 0xc89050, 1).lineBetween(px, py, ax, ay);
+    o.fillStyle(f >= 1 && Math.floor(t * 12) % 2 ? 0xffffff : 0xdfe4f0, 1).fillRect(ax - 0.6, ay - 0.6, 1.4, 1.4);
+    if (f >= 1) o.fillStyle(0xffffff, 0.35 + Math.sin(t * 20) * 0.2).fillCircle(ax, ay, 2.2);
   }
 
   bar(o: Phaser.GameObjects.Graphics, x: number, y: number, w: number, f: number, c: number, alpha = 1) {

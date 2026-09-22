@@ -10,18 +10,23 @@ import {
   type PlayerSnap,
   type PropSnap,
   type ServerMsg,
+  type TrapSnap,
   type WorldView,
 } from '../../shared/protocol';
 import {
   B,
+  BF,
+  CHAR_WIRE,
   E,
   ENEMY_KINDS,
+  ES_ROOTED,
   I,
   ITEM_KINDS,
   MSG_PONG,
   MSG_SNAP,
   P,
   PF,
+  TR,
   X,
   dang8,
   decodePong,
@@ -31,10 +36,11 @@ import {
   encodePing,
   type World,
 } from '../../shared/net/snapshot';
-import { quantizeInput, type PlayerInput } from '../../shared/sim/input';
+import { packButtons, quantizeInput, type Buttons, type PlayerInput } from '../../shared/sim/input';
 import { parseTiles, type TileMap } from '../../shared/sim/map';
 import { bulletAt } from '../../shared/sim/bullets';
-import { PLAYER_R, type StepResult } from '../../shared/sim/movement';
+import { PLAYER_R, type MoveState, type StepResult } from '../../shared/sim/movement';
+import { shieldCovers } from '../../shared/sim/kits/knight';
 import { Net } from './transport';
 import { Timeline } from './timeline';
 import { Predictor, type Target } from './predict';
@@ -44,13 +50,10 @@ const TICK_MS = 1000 / TICK_RATE;
 const REDUNDANCY = 4;
 const BASELINES = 64;
 
-export interface RawInput {
+export interface RawInput extends Buttons {
   mx: number;
   my: number;
   aim: number;
-  shoot: boolean;
-  dash: boolean;
-  kick: boolean;
 }
 
 export interface RenderBullet {
@@ -61,11 +64,14 @@ export interface RenderBullet {
   vy: number;
   e: boolean;
   r: number;
+  arrow: boolean;
 }
 
 export interface NetHooks {
   input: () => RawInput;
-  predicted: (res: StepResult, x: number, y: number, aim: number) => void;
+  predicted: (res: StepResult, s: MoveState) => void;
+  /** An enemy shot was stopped locally by your shield or slash; the server confirms a moment later. */
+  parried: (x: number, y: number, deflected: boolean) => void;
   impact: (x: number, y: number, what: 'wall' | 'enemy' | 'barrel', id: number) => void;
   event: (e: GameEvent) => void;
   floor: (f: FloorMsg) => void;
@@ -121,6 +127,10 @@ export class NetClient {
   private deferred: [number, GameEvent][] = [];
   private firstSeen = new Map<number, number>();
   private hidden = new Set<number>();
+  /** Where each server bullet was last drawn, for local parry checks. */
+  private shown = new Map<number, [number, number]>();
+  /** Locally parried shots and when to give up waiting for the server to agree. */
+  private parried = new Map<number, number>();
   private rate = { t: 0, snaps: 0, bin: 0, bout: 0, snapHz: 0, kbIn: 0, kbOut: 0 };
 
   constructor() {
@@ -149,7 +159,10 @@ export class NetClient {
     } else if (m.t === 'meta') {
       this.meta = new Map(m.players.map((p) => [p.id, p]));
       const mine = this.meta.get(this.myId);
-      if (mine) this.pred.stats = mine.stats;
+      if (mine) {
+        this.pred.stats = mine.stats;
+        this.pred.char = mine.char;
+      }
     }
   }
 
@@ -226,7 +239,7 @@ export class NetClient {
 
   private routeEvent(tick: number, e: GameEvent) {
     const me = this.myId;
-    if ((e.e === 'shot' || e.e === 'kick' || e.e === 'dash') && e.p === me) return;
+    if ((e.e === 'shot' || e.e === 'slash' || e.e === 'bash' || e.e === 'slide' || e.e === 'sprint' || e.e === 'trap') && e.p === me) return;
     if (e.e === 'spark' && e.p === me) return;
     let now = false;
     switch (e.e) {
@@ -300,12 +313,13 @@ export class NetClient {
 
   private tick(renderTick: number) {
     this.auditHits(performance.now());
-    const raw = this.hooks?.input() ?? { mx: 0, my: 0, aim: 0, shoot: false, dash: false, kick: false };
+    const raw = this.hooks?.input();
     const rt = Number.isFinite(renderTick) ? renderTick : 0;
-    const inp = quantizeInput(this.pred.seq + 1, raw.mx, raw.my, raw.aim, raw.shoot, raw.dash, raw.kick, rt);
+    const inp = quantizeInput(this.pred.seq + 1, raw?.mx ?? 0, raw?.my ?? 0, raw?.aim ?? 0, raw ? packButtons(raw) : 0, rt);
     const res = this.pred.step(inp);
     const s = this.pred.state;
-    if (res && s && (res.fired || res.kicked || res.dashed)) this.hooks?.predicted(res, s.x, s.y, s.aim);
+    if (res && s) this.hooks?.predicted(res, s);
+    if (s && s.swing > 0) this.parryLocal(s);
     const view = this.sample(rt);
     if (view) {
       const enemies: Target[] = view.enemies.map((e) => ({ id: e.id, x: e.x, y: e.y, r: ENEMY_R[e.k] }));
@@ -345,6 +359,10 @@ export class NetClient {
       id,
       name: m?.name ?? '…',
       c: row[P.c],
+      k: CHAR_WIRE[row[P.k]] ?? 'archer',
+      block: !!(f & PF.block),
+      mode: row[P.mode],
+      draw: row[P.draw] / 255,
       x: dpos(row[P.x]),
       y: dpos(row[P.y]),
       aim: dang8(row[P.aim]),
@@ -355,14 +373,12 @@ export class NetClient {
       xpNext: row[P.xpNext],
       down: !!(f & PF.down),
       rev: row[P.rev] / 255,
-      dash: !!(f & PF.dash),
       inv: !!(f & PF.inv),
       off: !!(f & PF.off),
       items: m?.items ?? [],
       choices: m?.choices ?? null,
       pending: row[P.pending],
       kills: row[P.kills],
-      dashCd: row[P.dashCd] / 255,
     };
   }
 
@@ -375,7 +391,8 @@ export class NetClient {
       hp: row[E.hp],
       maxHp: row[E.maxHp],
       a: dang8(row[E.a]),
-      s: row[E.s],
+      s: row[E.s] & 7,
+      rooted: !!(row[E.s] & ES_ROOTED),
     };
   }
 
@@ -386,8 +403,9 @@ export class NetClient {
       y: dpos(row[B.y]),
       vx: row[B.vx],
       vy: row[B.vy],
-      e: !!(row[B.flags] & 1),
-      r: row[B.flags] >> 1,
+      e: !!(row[B.flags] & BF.enemy),
+      r: (row[B.flags] >> 1) & 7,
+      arrow: !!(row[B.flags] & BF.arrow),
       o: row[B.o],
       sq: row[B.sq],
       i: row[B.i],
@@ -398,7 +416,7 @@ export class NetClient {
   }
 
   private buildView(w: World): WorldView {
-    const [pl, en, bu, ba, it] = w.tables;
+    const [pl, en, bu, ba, it, tr] = w.tables;
     return {
       tick: w.tick,
       phase: w.phase,
@@ -410,7 +428,12 @@ export class NetClient {
       bullets: [...bu].map(([id, r]) => this.bullet(r, id)),
       barrels: [...ba].map(([id, r]): PropSnap => ({ id, x: dpos(r[X.x]), y: dpos(r[X.y]) })),
       items: [...it].map(([id, r]): ItemSnap => ({ id, k: ITEM_KINDS[r[I.k]] ?? 'potion', x: dpos(r[I.x]), y: dpos(r[I.y]) })),
+      traps: this.traps(tr),
     };
+  }
+
+  private traps(t: World['tables'][number] | undefined): TrapSnap[] {
+    return t ? [...t].map(([id, r]) => ({ id, x: dpos(r[TR.x]), y: dpos(r[TR.y]), c: r[TR.c] })) : [];
   }
 
   /** Remote entities interpolated at the render tick. Bullets are left empty; see renderBullets. */
@@ -424,7 +447,7 @@ export class NetClient {
       if (!rb) return [x, y];
       return [x + (dpos(rb[ix]) - x) * f, y + (dpos(rb[iy]) - y) * f];
     };
-    const [pl, en, , ba, it] = a.tables;
+    const [pl, en, , ba, it, tr] = a.tables;
     const bt = b?.tables;
     const players = [...pl].map(([id, r]) => {
       const rb = bt?.[0].get(id);
@@ -447,7 +470,7 @@ export class NetClient {
       return { id, x, y };
     });
     const items = [...it].map(([id, r]): ItemSnap => ({ id, k: ITEM_KINDS[r[I.k]] ?? 'potion', x: dpos(r[I.x]), y: dpos(r[I.y]) }));
-    return { tick: t, phase: a.phase, floor: a.floor, left: a.left, stairs: a.stairs, players, enemies, bullets: [], barrels, items };
+    return { tick: t, phase: a.phase, floor: a.floor, left: a.left, stairs: a.stairs, players, enemies, bullets: [], barrels, items, traps: this.traps(tr) };
   }
 
   /**
@@ -464,16 +487,27 @@ export class NetClient {
     const pt = this.predTick();
     const me = this.myRenderPos();
     const s = this.pred.state;
-    const canHit = s && !s.down && s.dashing <= 0;
+    const canHit = s && !s.down;
     const live = latest.tables[2];
     for (const id of this.firstSeen.keys()) if (!live.has(id)) this.firstSeen.delete(id);
     for (const id of this.hidden) if (!live.has(id)) this.hidden.delete(id);
+    for (const id of this.shown.keys()) if (!live.has(id)) this.shown.delete(id);
+    for (const id of this.parried.keys()) if (!live.has(id)) this.parried.delete(id);
 
     for (const [id, r] of live) {
       const o = r[B.o];
       if (o && o !== this.myId) continue;
       if (o === this.myId && r[B.sq] && this.pred.predictedSeqs.has(r[B.sq])) continue;
-      if (this.hidden.has(id)) continue;
+      const e = !!(r[B.flags] & BF.enemy);
+      const until = this.parried.get(id);
+      if (until !== undefined && (!e || now > until)) {
+        this.parried.delete(id);
+        this.hidden.delete(id);
+      }
+      if (this.hidden.has(id)) {
+        if (e) continue;
+        this.hidden.delete(id);
+      }
       let seen = this.firstSeen.get(id);
       if (seen === undefined) this.firstSeen.set(id, (seen = now));
       const t0 = r[B.t0];
@@ -481,13 +515,23 @@ export class NetClient {
       const t = start + (pt - start) * Math.min(1, (now - seen) / 200);
       const p = bulletAt(map, dpos(r[B.x]), dpos(r[B.y]), r[B.vx], r[B.vy], t - t0);
       if (!p) continue;
-      const e = !!(r[B.flags] & 1);
-      const rad = r[B.flags] >> 1;
-      if (e && canHit && me && Math.hypot(p[0] - me[0], p[1] - me[1]) < PLAYER_R + rad) {
-        this.hidden.add(id);
-        continue;
+      const rad = (r[B.flags] >> 1) & 7;
+      const arrow = !!(r[B.flags] & BF.arrow);
+      if (e && canHit && me) {
+        const d = Math.hypot(p[0] - me[0], p[1] - me[1]);
+        if (d < PLAYER_R + rad + 3 && shieldCovers(s, Math.atan2(-r[B.vy], -r[B.vx]))) {
+          this.hidden.add(id);
+          this.parried.set(id, now + this.rtt + 200);
+          this.hooks?.parried(p[0], p[1], false);
+          continue;
+        }
+        if (d < PLAYER_R + rad) {
+          this.hidden.add(id);
+          continue;
+        }
       }
-      out.push({ id, x: p[0], y: p[1], vx: r[B.vx], vy: r[B.vy], e, r: rad });
+      this.shown.set(id, p);
+      out.push({ id, x: p[0], y: p[1], vx: r[B.vx], vy: r[B.vy], e, r: rad, arrow });
     }
 
     const br = this.tl.bracket(rt);
@@ -496,11 +540,30 @@ export class NetClient {
         const o = r[B.o];
         if (!o || o === this.myId) continue;
         const p = bulletAt(map, dpos(r[B.x]), dpos(r[B.y]), r[B.vx], r[B.vy], rt - r[B.t0]);
-        if (p) out.push({ id, x: p[0], y: p[1], vx: r[B.vx], vy: r[B.vy], e: false, r: r[B.flags] >> 1 });
+        if (p) out.push({ id, x: p[0], y: p[1], vx: r[B.vx], vy: r[B.vy], e: false, r: (r[B.flags] >> 1) & 7, arrow: !!(r[B.flags] & BF.arrow) });
       }
 
     const a = this.alpha;
-    for (const b of this.pred.bullets) out.push({ id: b.id, x: b.px + (b.x - b.px) * a, y: b.py + (b.y - b.py) * a, vx: b.vx, vy: b.vy, e: false, r: b.r });
+    for (const b of this.pred.bullets) out.push({ id: b.id, x: b.px + (b.x - b.px) * a, y: b.py + (b.y - b.py) * a, vx: b.vx, vy: b.vy, e: false, r: b.r, arrow: true });
     return out;
+  }
+
+  /** Enemy shots inside your active slash arc vanish locally; the server's deflected copy shows up as yours. */
+  private parryLocal(s: MoveState) {
+    const st = this.pred.stats;
+    for (const [id, p] of this.shown) {
+      if (this.hidden.has(id)) continue;
+      const row = this.tl.latest()?.tables[2].get(id);
+      if (!row || !(row[B.flags] & BF.enemy)) continue;
+      const dx = p[0] - s.x;
+      const dy = p[1] - s.y;
+      const d = Math.hypot(dx, dy);
+      const off = Math.abs(Math.atan2(Math.sin(Math.atan2(dy, dx) - s.aim), Math.cos(Math.atan2(dy, dx) - s.aim)));
+      if (d < st.reach + 8 && (d < 6 || off < st.arc)) {
+        this.hidden.add(id);
+        this.parried.set(id, performance.now() + this.rtt + 200);
+        this.hooks?.parried(p[0], p[1], true);
+      }
+    }
   }
 }

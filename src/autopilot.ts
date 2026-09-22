@@ -1,25 +1,31 @@
-import { T, TILE, type WorldView } from '../shared/protocol';
+import { T, TILE, type PlayerStats, type WorldView } from '../shared/protocol';
+import { MODE, type MoveState } from '../shared/sim/movement';
+import { SPRINT_MULT } from '../shared/sim/kits/archer';
+import { noButtons, type Buttons } from '../shared/sim/input';
 
 export interface BotView extends Omit<WorldView, 'bullets'> {
-  bullets: { x: number; y: number; e: boolean }[];
+  bullets: { x: number; y: number; vx: number; vy: number; e: boolean }[];
 }
 
-export interface BotOutput {
+export interface BotOutput extends Buttons {
   mx: number;
   my: number;
   aim: number;
-  shoot: boolean;
-  dash: boolean;
-  kick: boolean;
 }
+
+type Threat = { d: number; b: { x: number; y: number } } | undefined;
 
 /** Dev/demo helper enabled with ?bot=1: plays the local character so multi-tab tests can run hands-free. */
 export class Autopilot {
   private next: { x: number; y: number } | null = null;
   private lastPath = 0;
-  private lastDash = 0;
   private strafe = 1;
   private lastChoose = 0;
+  private releaseUntil = 0;
+  private kiteUntil = 0;
+  private tapAt = 0;
+  private lastTrap = 0;
+  private lastBash = 0;
   aimX = 0;
   aimY = 0;
 
@@ -85,9 +91,9 @@ export class Autopilot {
     return null;
   }
 
-  step(s: BotView, myId: number, now: number): BotOutput {
+  step(s: BotView, myId: number, now: number, ms: MoveState | null, st: PlayerStats): BotOutput {
     const me = s.players.find((p) => p.id === myId);
-    const out: BotOutput = { mx: 0, my: 0, aim: 0, shoot: false, dash: false, kick: false };
+    const out: BotOutput = { mx: 0, my: 0, aim: 0, ...noButtons() };
     if (!me || !this.map() || me.down) return out;
     if (me.choices && now - this.lastChoose > 600) {
       this.lastChoose = now;
@@ -138,7 +144,7 @@ export class Autopilot {
       const dy = target.y - me.y;
       const d = Math.hypot(dx, dy) || 1;
       if (Math.random() < 0.01) this.strafe *= -1;
-      const away = realD < 55 ? -1 : realD > 90 ? 0.6 : 0;
+      const away = me.k === 'knight' ? 1 : realD < 55 ? -1 : realD > 90 ? 0.6 : 0;
       out.mx = (dx / d) * away + (-dy / d) * this.strafe * 0.8;
       out.my = (dy / d) * away + (dx / d) * this.strafe * 0.8;
       const m = this.map()!;
@@ -155,20 +161,77 @@ export class Autopilot {
       out.aim = Math.atan2(target.y - (me.y - 3), target.x - me.x);
       this.aimX = target.x;
       this.aimY = target.y;
-      out.shoot = !!seen && realD < 220;
-      out.kick = realD < 24;
     } else {
       out.aim = Math.atan2(out.my, out.mx);
       this.aimX = me.x + out.mx * 40;
       this.aimY = me.y + out.my * 40;
     }
-    const danger = s.bullets.some((b) => b.e && Math.hypot(b.x - me.x, b.y - me.y) < 22);
-    if (danger && now - this.lastDash > 900) {
-      this.lastDash = now;
-      out.dash = true;
-      const a = Math.random() < 0.5 ? 1 : -1;
-      [out.mx, out.my] = [-out.my * a || 1, out.mx * a];
-    }
+    if (!ms) return out;
+    const threat = s.bullets
+      .filter((b) => b.e)
+      .map((b) => ({ b, d: Math.hypot(b.x - me.x, b.y - me.y) }))
+      .filter(({ b, d }) => d < 60 && (me.x - b.x) * b.vx + (me.y - b.y) * b.vy > 0)
+      .sort((a, b) => a.d - b.d)[0];
+    if (me.k === 'knight') this.knight(out, ms, st, target, !!seen, realD, threat, now);
+    else this.archer(out, ms, st, target, !!seen, realD, threat, now);
     return out;
+  }
+
+  private archer(out: BotOutput, ms: MoveState, st: PlayerStats, target: { x: number; y: number } | null, seen: boolean, d: number, threat: Threat, now: number) {
+    const speed = Math.hypot(ms.vx, ms.vy);
+    if (target && seen && d < 55 && now > this.kiteUntil + 1500 && ms.ab >= 1) this.kiteUntil = now + 1400;
+    if (threat && threat.d < 30 && now > this.kiteUntil + 800) this.kiteUntil = now + 700;
+    if (now < this.kiteUntil && target) {
+      // Sprint away, release and tap for a slide, draw mid-glide.
+      const a = Math.atan2(ms.y - target.y, ms.x - target.x) + 0.5;
+      if (ms.mode === MODE.walk || ms.mode === MODE.sprint) {
+        out.mx = Math.cos(a);
+        out.my = Math.sin(a);
+        out.move = !(ms.mode === MODE.sprint && speed >= st.speed * SPRINT_MULT * 0.95);
+        out.a = false;
+      }
+      if (ms.mode === MODE.coast && now > this.tapAt) {
+        out.movePress = true;
+        this.tapAt = now + 300;
+      }
+      if (ms.mode !== MODE.walk) {
+        out.a = ms.mode === MODE.slide && ms.act > 2;
+        return;
+      }
+    }
+    if (!target) return;
+    if (seen && d < 240) {
+      if (d > 60 && d < 130) out.mx = out.my = 0;
+      const want = d < 90 ? 0.45 : 0.95;
+      if (now < this.releaseUntil) out.a = false;
+      else if (ms.draw >= st.drawTicks * want) {
+        out.a = false;
+        this.releaseUntil = now + 60;
+      } else out.a = true;
+    }
+    if (seen && d < 70 && ms.spec >= 1 && now - this.lastTrap > 2500) {
+      this.lastTrap = now;
+      out.bPress = true;
+    }
+  }
+
+  private knight(out: BotOutput, ms: MoveState, st: PlayerStats, target: { x: number; y: number } | null, seen: boolean, d: number, threat: Threat, now: number) {
+    if (threat && ms.atkT <= 0 && threat.d < st.reach + 6) {
+      out.aim = Math.atan2(threat.b.y - ms.y, threat.b.x - ms.x);
+      out.aPress = true;
+      return;
+    }
+    if (threat && threat.d < 50) {
+      out.aim = Math.atan2(threat.b.y - ms.y, threat.b.x - ms.x);
+      out.b = true;
+      return;
+    }
+    if (!target || !seen) return;
+    if (d < 75 && d > 30 && ms.ab >= 1 && now - this.lastBash > 1200) {
+      this.lastBash = now;
+      out.movePress = true;
+    }
+    out.move = (ms.mode === MODE.bash || ms.mode === MODE.skid) && now - this.lastBash < 450;
+    if (d < st.reach + 12) out.a = true;
   }
 }

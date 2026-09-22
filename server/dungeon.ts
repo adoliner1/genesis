@@ -39,7 +39,7 @@ export interface FloorData {
 
 const W = 64;
 const H = 48;
-const PASSIVE_ITEMS: ItemKind[] = ['twin', 'bounce', 'heavy', 'fang', 'boots', 'pierce'];
+const PASSIVE_ITEMS: ItemKind[] = ['sigil', 'ricochet', 'heavy', 'fang', 'boots', 'charm'];
 
 const ri = (rng: Rng, a: number, b: number) => a + Math.floor(rng() * (b - a + 1));
 const center = (r: Room) => ({ x: Math.floor(r.x + r.w / 2), y: Math.floor(r.y + r.h / 2) });

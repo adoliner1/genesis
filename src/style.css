@@ -194,6 +194,72 @@ label {
   color: var(--gold);
 }
 
+.controls .blurb {
+  color: var(--ink);
+  font-style: italic;
+  margin-bottom: 4px;
+}
+
+.pick-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: -6px;
+}
+
+#pick {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.pick-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  text-align: left;
+  letter-spacing: 0;
+  background: #1a1022;
+}
+
+.pick-card canvas {
+  image-rendering: pixelated;
+  flex: none;
+  width: 42px;
+  height: 45px;
+  filter: drop-shadow(2px 2px 0 #000);
+}
+
+.pick-card div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pick-card b {
+  font-size: 15px;
+}
+
+.pick-card small {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.pick-card em {
+  font-size: 10px;
+  font-style: normal;
+  color: #8fe0ff;
+}
+
+.pick-card.on {
+  border-color: var(--gold);
+  background: #2e1c30;
+  box-shadow: 0 3px 0 #000, 0 0 0 2px rgba(255, 210, 63, 0.25);
+}
+
 #hud {
   position: fixed;
   inset: 0;
@@ -251,12 +317,76 @@ label {
   background: linear-gradient(#ffe066, #c2861a);
 }
 
-.dash {
-  height: 5px;
+#kit {
+  display: grid;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-shadow: 1px 1px 0 #000;
 }
 
-.dash > div {
-  background: #4fc3ff;
+.kit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kit-row[hidden] {
+  display: none;
+}
+
+.kit-label {
+  width: 44px;
+  color: var(--muted);
+}
+
+.pips {
+  display: flex;
+  gap: 4px;
+}
+
+.pip {
+  position: relative;
+  width: 22px;
+  height: 8px;
+  background: #0d0810;
+  border: 2px solid #000;
+  box-shadow: 0 0 0 1px var(--edge);
+  overflow: hidden;
+}
+
+.pip i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: #3a6a8a;
+}
+
+.pip.full i {
+  background: linear-gradient(#8fe0ff, #2f8fd0);
+}
+
+.guard {
+  flex: 1;
+  height: 8px;
+}
+
+#guard-fill {
+  background: linear-gradient(#e8ecf8, #7a8298);
+}
+
+#guard-fill.broken {
+  background: linear-gradient(#ff8a5a, #b3301f);
+}
+
+#kit-hint {
+  min-height: 12px;
+  color: var(--muted);
+}
+
+#kit-hint.hot {
+  color: var(--gold);
+  animation: pulse 0.5s infinite alternate;
 }
 
 #items {

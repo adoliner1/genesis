@@ -78,12 +78,12 @@ wss.on('connection', (ws: WebSocket) => {
         const code = makeCode();
         room = new Room(code);
         rooms.set(code, room);
-        pid = room.addPlayer(ws, msg.name)!.id;
+        pid = room.addPlayer(ws, msg.name, msg.char)!.id;
         console.log(`room ${code} created`);
       } else if (msg.t === 'join' || msg.t === 'rejoin') {
         const r = rooms.get(String(msg.code).toUpperCase().trim());
         if (!r) return fail('No room with that code.', 'missing');
-        const p = msg.t === 'join' ? r.addPlayer(ws, msg.name) : r.rejoin(ws, String(msg.token));
+        const p = msg.t === 'join' ? r.addPlayer(ws, msg.name, msg.char) : r.rejoin(ws, String(msg.token));
         if (!p) return msg.t === 'join' ? fail('That room is full (4 players max).', 'full') : fail('Your slot has expired.', 'expired');
         room = r;
         pid = p.id;

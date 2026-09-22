@@ -16,6 +16,8 @@
         <h1>BONEYARD</h1>
         <p class="tag">A co-op crawl through four floors of blood, bone and bad decisions.</p>
         <label>Your name<input id="name" maxlength="14" placeholder="Crawler" autocomplete="off" /></label>
+        <div class="pick-label">Choose your crawler</div>
+        <div id="pick" role="radiogroup" aria-label="Character"></div>
         <button id="create" class="primary">Create room</button>
         <div class="or"><span>or join a friend</span></div>
         <div class="row">
@@ -23,15 +25,7 @@
           <button id="join">Join</button>
         </div>
         <p id="lobby-error" role="alert"></p>
-        <ul class="controls">
-          <li><b>WASD</b> move</li>
-          <li><b>Mouse</b> aim</li>
-          <li><b>Left click</b> shoot</li>
-          <li><b>Right click / F</b> kick — shove enemies into hazards, boot barrels, bat bullets back</li>
-          <li><b>Space</b> dash — i-frames, hop over pits</li>
-          <li><b>1 2 3</b> pick level-up perk</li>
-          <li><b>Middle-drag / screen edge</b> pan the camera · <b>Tab</b> watch teammates · <b>C</b> snap back</li>
-        </ul>
+        <ul class="controls" id="controls"></ul>
       </div>
     </section>
 
@@ -39,7 +33,12 @@
       <div id="hud-left">
         <div class="bar hp"><div id="hp-fill"></div><span id="hp-text"></span></div>
         <div class="bar xp"><div id="xp-fill"></div><span id="xp-text"></span></div>
-        <div class="bar dash"><div id="dash-fill"></div></div>
+        <div id="kit">
+          <div class="kit-row"><span class="kit-label" id="kit-ab-label">SLIDE</span><span class="pips" id="kit-ab"></span></div>
+          <div class="kit-row" id="kit-spec-row"><span class="kit-label">TRAP</span><span class="pips" id="kit-spec"></span></div>
+          <div class="kit-row" id="kit-guard-row" hidden><span class="kit-label">GUARD</span><div class="bar guard"><div id="guard-fill"></div></div></div>
+          <div id="kit-hint"></div>
+        </div>
         <div id="items"></div>
       </div>
       <div id="hud-top">
@@ -67,7 +66,7 @@
         <button id="restart" class="primary">Descend again</button>
       </div>
       <div id="camtag" hidden></div>
-      <div id="help">WASD move · Click shoot · RMB/F kick · Space dash · Middle-drag / screen edge pan · Tab teammates · C recenter</div>
+      <div id="help"></div>
     </section>
 
     <div id="reconnecting" hidden>Connection dropped — reconnecting to your slot…</div>

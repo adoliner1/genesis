@@ -5,6 +5,8 @@ import { Hud } from './hud';
 import { GameScene } from './scene';
 import { initAudio } from './audio';
 import { DebugOverlay } from './debug';
+import { drawPortrait } from './sprites';
+import { CHAR_INFO, CHAR_KINDS, PLAYER_COLORS, type CharKind } from '../shared/protocol';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const nameInput = $<HTMLInputElement>('name');
@@ -20,6 +22,42 @@ interface Session {
 nameInput.value = localStorage.getItem('boneyard-name') ?? '';
 const params = new URLSearchParams(location.search);
 const roomParam = params.get('room')?.toUpperCase() ?? null;
+
+const isChar = (v: unknown): v is CharKind => CHAR_KINDS.includes(v as CharKind);
+const charParam = params.get('char');
+let char: CharKind = isChar(charParam) ? charParam : isChar(localStorage.getItem('boneyard-char')) ? (localStorage.getItem('boneyard-char') as CharKind) : 'archer';
+
+function renderPick() {
+  const pick = $('pick');
+  pick.innerHTML = '';
+  for (const k of CHAR_KINDS) {
+    const info = CHAR_INFO[k];
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `pick-card${k === char ? ' on' : ''}`;
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(k === char));
+    b.dataset.char = k;
+    const cv = document.createElement('canvas');
+    drawPortrait(cv, k, PLAYER_COLORS[k === 'knight' ? 2 : 0], 4);
+    b.appendChild(cv);
+    const txt = document.createElement('div');
+    txt.innerHTML = `<b>${info.name}</b><small>${info.role}</small><em>${info.weight}</em>`;
+    b.appendChild(txt);
+    b.onclick = () => {
+      char = k;
+      localStorage.setItem('boneyard-char', k);
+      renderPick();
+    };
+    pick.appendChild(b);
+  }
+  const info = CHAR_INFO[char];
+  $('controls').innerHTML =
+    `<li class="blurb">${info.blurb}</li><li><b>WASD</b> move · <b>Mouse</b> aim</li>` +
+    info.controls.map(([k, d]) => `<li><b>${k}</b> ${d}</li>`).join('') +
+    '<li><b>1 2 3</b> pick level-up perk</li>';
+}
+renderPick();
 if (roomParam) {
   codeInput.value = roomParam;
   $('join').classList.add('primary');
@@ -63,8 +101,8 @@ function connect(first: First) {
 
   net.onOpen = (again) => {
     if (again && session) net.sendJson({ t: 'rejoin', code: session.code, token: session.token });
-    else if (first.t === 'create') net.sendJson({ t: 'create', name });
-    else if (first.t === 'join') net.sendJson({ t: 'join', code: first.code, name });
+    else if (first.t === 'create') net.sendJson({ t: 'create', name, char });
+    else if (first.t === 'join') net.sendJson({ t: 'join', code: first.code, name, char });
     else net.sendJson(first);
   };
   net.onStatus = (s) => {

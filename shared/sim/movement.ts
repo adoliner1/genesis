@@ -1,15 +1,17 @@
 import { TICK_RATE } from '../protocol.ts';
-import { BTN_DASH, BTN_KICK, BTN_SHOOT, hash01, inputAim, inputDir, type PlayerInput } from './input.ts';
-import { moveBody, type TileMap } from './map.ts';
+import { hash01, type PlayerInput } from './input.ts';
+import type { TileMap } from './map.ts';
 
 export const DT = 1 / TICK_RATE;
 export const PLAYER_R = 5;
 
+export const MODE = { walk: 0, sprint: 1, coast: 2, slide: 3, bash: 4, skid: 5 } as const;
+
 /**
  * Everything a movement controller reads and writes each tick. Server and client run the
  * same controller on this state; the server ships it back verbatim so the client can
- * rewind and replay. New controllers (sprint drift, slides, charges, blinks) add fields
- * here and to MOVE_KEYS so they are reconciled too.
+ * rewind and replay. Kit-specific fields live here too so they are reconciled for free;
+ * kits simply leave the ones they don't use at zero.
  */
 export interface MoveState {
   x: number;
@@ -17,27 +19,86 @@ export interface MoveState {
   vx: number;
   vy: number;
   aim: number;
-  dashing: number;
-  dashT: number;
   stagger: number;
-  fireT: number;
-  kickT: number;
   down: boolean;
+  /** One of MODE. */
+  mode: number;
+  /** Ticks left in a timed mode (coast window, slide, bash, skid). */
+  act: number;
+  /** Primary attack cooldown. */
+  atkT: number;
+  /** Archer: ticks the bow has been drawn (0 = not drawing). */
+  draw: number;
+  /** Knight: ticks left in the slash's active (deflecting) window. */
+  swing: number;
+  /** Movement-ability charges and recharge progress. */
+  ab: number;
+  abT: number;
+  /** Secondary charges (archer pin traps) and recharge progress. */
+  spec: number;
+  specT: number;
+  /** Knight shield guard; negative after a guard break until it regenerates. */
+  guard: number;
+  /** Ticks until guard starts regenerating. */
+  guardT: number;
+  /** Knight: shield raised this tick (0/1). */
+  block: number;
 }
 
-export const MOVE_KEYS = ['x', 'y', 'vx', 'vy', 'aim', 'dashing', 'dashT', 'stagger', 'fireT', 'kickT', 'down'] as const;
+export const MOVE_KEYS = [
+  'x',
+  'y',
+  'vx',
+  'vy',
+  'aim',
+  'stagger',
+  'down',
+  'mode',
+  'act',
+  'atkT',
+  'draw',
+  'swing',
+  'ab',
+  'abT',
+  'spec',
+  'specT',
+  'guard',
+  'guardT',
+  'block',
+] as const;
 
+/** Tunables a controller reads. Perks and items change these; unused ones are ignored by a kit. */
 export interface MoveStats {
   speed: number;
-  dashCd: number;
-  fireCd: number;
+  atkCd: number;
+  abCd: number;
+  abMax: number;
+  specCd: number;
+  specMax: number;
+  drawTicks: number;
+  guardMax: number;
 }
 
 export interface StepResult {
-  dashed: boolean;
-  fired: boolean;
-  kicked: boolean;
+  /** Primary projectile released (archer). */
+  fire: boolean;
+  /** Draw fraction 0..1 of the released arrow. */
+  power: number;
+  /** Shooter counted as standing still (archer passive). */
+  still: boolean;
+  /** Secondary used (archer pin trap). */
+  trap: boolean;
+  /** Melee swing started (knight). */
+  slash: boolean;
+  /** Movement ability started (archer sprint, knight bash). */
+  ability: boolean;
+  /** Slide started (archer glide, knight skid). */
+  slide: boolean;
+  /** Wall impact speed while staggered (knockback slam). */
+  impact: number;
 }
+
+export const newResult = (): StepResult => ({ fire: false, power: 0, still: false, trap: false, slash: false, ability: false, slide: false, impact: 0 });
 
 export interface MovementController {
   step(s: MoveState, stats: MoveStats, inp: PlayerInput, map: TileMap): StepResult;
@@ -49,13 +110,29 @@ export const newMoveState = (): MoveState => ({
   vx: 0,
   vy: 0,
   aim: 0,
-  dashing: 0,
-  dashT: 0,
   stagger: 0,
-  fireT: 0,
-  kickT: 0,
   down: false,
+  mode: 0,
+  act: 0,
+  atkT: 0,
+  draw: 0,
+  swing: 0,
+  ab: 0,
+  abT: 0,
+  spec: 0,
+  specT: 0,
+  guard: 0,
+  guardT: 0,
+  block: 0,
 });
+
+/** Full charges and guard, no action in progress. */
+export function resetKit(s: MoveState, st: MoveStats) {
+  s.mode = s.act = s.draw = s.swing = s.block = s.abT = s.specT = s.guardT = 0;
+  s.ab = st.abMax;
+  s.spec = st.specMax;
+  s.guard = st.guardMax;
+}
 
 export const copyMove = (s: MoveState): MoveState => ({ ...newMoveState(), ...pickMove(s) });
 
@@ -65,85 +142,47 @@ export function pickMove(s: MoveState): MoveState {
   return o as unknown as MoveState;
 }
 
-/** Largest per-field disagreement, in px for positions and ticks for timers. */
-export function moveError(a: MoveState, b: MoveState): number {
+/** Per-field weight when comparing states: px for positions, ticks for timers. */
+const ERR_W: Partial<Record<(typeof MOVE_KEYS)[number], number>> = { vx: 0.05, vy: 0.05, aim: 0, guard: 0.1 };
+
+/** Largest per-field disagreement, and which field it was. */
+export function moveDiff(a: MoveState, b: MoveState): [number, string] {
   let e = Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
-  e = Math.max(e, Math.abs(a.vx - b.vx) * 0.05, Math.abs(a.vy - b.vy) * 0.05);
-  for (const k of ['dashing', 'dashT', 'fireT', 'kickT', 'stagger'] as const) e = Math.max(e, Math.abs(a[k] - b[k]));
-  if (a.down !== b.down) e = Math.max(e, 99);
-  return e;
+  let key = 'pos';
+  for (const k of MOVE_KEYS) {
+    if (k === 'x' || k === 'y') continue;
+    const d = k === 'down' ? (a.down !== b.down ? 99 : 0) : Math.abs(Number(a[k]) - Number(b[k])) * (ERR_W[k] ?? 1);
+    if (d > e) {
+      e = d;
+      key = k;
+    }
+  }
+  return [e, key];
 }
 
-const dec = (v: number) => Math.max(v - 1, -1);
+export const moveError = (a: MoveState, b: MoveState) => moveDiff(a, b)[0];
 
-/** Default twin-stick gunner: snappy walk, fixed-length dash, recoil on fire. */
-export const gunner: MovementController = {
-  step(s, st, inp, map) {
-    const res: StepResult = { dashed: false, fired: false, kicked: false };
-    s.aim = inputAim(inp);
-    s.stagger = dec(s.stagger);
-    if (s.down) {
-      s.vx *= 0.8;
-      s.vy *= 0.8;
-      moveBody(map, s, PLAYER_R, DT);
-      return res;
-    }
-    s.fireT = dec(s.fireT);
-    s.dashT = dec(s.dashT);
-    s.kickT = dec(s.kickT);
-    const [mx, my] = inputDir(inp);
+export const dec = (v: number) => Math.max(v - 1, -1);
 
-    if (inp.buttons & BTN_DASH && s.dashT <= 0) {
-      let dx = mx;
-      let dy = my;
-      if (!dx && !dy) {
-        dx = Math.cos(s.aim);
-        dy = Math.sin(s.aim);
-      }
-      const d = Math.sqrt(dx * dx + dy * dy) || 1;
-      s.vx = (dx / d) * 310;
-      s.vy = (dy / d) * 310;
-      s.dashing = 7;
-      s.dashT = st.dashCd;
-      res.dashed = true;
-    }
+/** Recharges one charge at a time, like most limited abilities. */
+export function recharge(s: MoveState, st: MoveStats) {
+  if (s.ab > st.abMax) s.ab = st.abMax;
+  if (s.ab < st.abMax && ++s.abT >= st.abCd) {
+    s.ab++;
+    s.abT = 0;
+  }
+  if (s.spec > st.specMax) s.spec = st.specMax;
+  if (s.spec < st.specMax && ++s.specT >= st.specCd) {
+    s.spec++;
+    s.specT = 0;
+  }
+}
 
-    if (s.dashing > 0) {
-      s.dashing--;
-      if (s.dashing === 0) {
-        s.vx *= 0.4;
-        s.vy *= 0.4;
-      }
-    } else if (s.stagger > 0) {
-      s.vx *= 0.85;
-      s.vy *= 0.85;
-    } else {
-      s.vx += (mx * st.speed - s.vx) * 0.3;
-      s.vy += (my * st.speed - s.vy) * 0.3;
-    }
-    moveBody(map, s, PLAYER_R, DT);
-
-    if (inp.buttons & BTN_SHOOT && s.fireT <= 0 && s.dashing <= 0) {
-      s.fireT += st.fireCd;
-      s.vx -= Math.cos(s.aim) * 22;
-      s.vy -= Math.sin(s.aim) * 22;
-      res.fired = true;
-    }
-    if (inp.buttons & BTN_KICK && s.kickT <= 0) {
-      s.kickT = 16;
-      res.kicked = true;
-    }
-    return res;
-  },
-};
-
-export const BULLET_SPEED = 330;
-export const BULLET_LIFE = 40;
 export const MUZZLE = 7;
 
 /** Deterministic per-shot angles; seq keys the spread so prediction matches the server. */
 export function shotAngles(aim: number, multishot: number, seq: number): number[] {
   const out: number[] = [];
-  for (let i = 0; i < multishot; i++) out.push(aim + (i - (multishot - 1) / 2) * 0.12 + (hash01(seq * 8 + i) - 0.5) * 0.05);
+  for (let i = 0; i < multishot; i++) out.push(aim + (i - (multishot - 1) / 2) * 0.1 + (hash01(seq * 8 + i) - 0.5) * 0.03);
   return out;
 }

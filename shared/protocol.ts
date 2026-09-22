@@ -30,51 +30,116 @@ export type EnemyKind = 'grunt' | 'archer' | 'brute' | 'boss';
 
 export const ENEMY_R: Record<EnemyKind, number> = { grunt: 6, archer: 5, brute: 8, boss: 14 };
 
-export type ItemKind = 'potion' | 'twin' | 'bounce' | 'heavy' | 'fang' | 'boots' | 'pierce';
+export type CharKind = 'archer' | 'knight';
+export const CHAR_KINDS: CharKind[] = ['archer', 'knight'];
 
-export const ITEM_INFO: Record<ItemKind, { name: string; desc: string }> = {
+export interface CharInfo {
+  name: string;
+  role: string;
+  blurb: string;
+  weight: string;
+  controls: [string, string][];
+  help: string;
+}
+
+export const CHAR_INFO: Record<CharKind, CharInfo> = {
+  archer: {
+    name: 'Archer',
+    role: 'Fragile, fast sharpshooter',
+    blurb: 'Fastest thing in the Boneyard. Sprint, slide, loose an arrow mid-glide. Mobility is the only armor.',
+    weight: 'Light · takes 120% knockback',
+    controls: [
+      ['LMB', 'Hold to draw, release to fire. Full draw pierces'],
+      ['RMB / F', 'Pin Trap: roots the first enemy to cross it (2 charges)'],
+      ['Hold Shift', 'Sprint: builds speed, drifts on turns, no shooting'],
+      ['Release + tap Shift', 'Slide: straight glide you can shoot from (2 charges)'],
+      ['Passive', 'Arrows fly faster when standing still or sliding'],
+    ],
+    help: 'LMB hold+release shoot · RMB/F trap · hold Shift sprint · release, tap Shift slide',
+  },
+  knight: {
+    name: 'Knight',
+    role: 'Sword and shield, nothing else',
+    blurb: 'March in behind the shield, bash to close, cut them down. Time your slash to send shots back.',
+    weight: 'Heavy · takes 75% knockback',
+    controls: [
+      ['LMB', 'Slash: wide 140° swing, deflects projectiles'],
+      ['Hold RMB / F', 'Shield: blocks toward the cursor, slows you, drains guard'],
+      ['Space / Shift', 'Shield Bash: hop forward shoving enemies (2 charges)'],
+      ['Hold through bash', 'Shield Skid: grind on into a slide, slash on the move'],
+    ],
+    help: 'LMB slash · hold RMB/F shield · Space bash · hold Space through it to skid',
+  },
+};
+
+export type ItemKind = 'potion' | 'sigil' | 'ricochet' | 'heavy' | 'fang' | 'boots' | 'charm';
+
+type PerKit = string | Record<CharKind, string>;
+const perKit = (d: PerKit, k: CharKind) => (typeof d === 'string' ? d : d[k]);
+
+const ITEM_TEXT: Record<ItemKind, { name: string; desc: PerKit }> = {
   potion: { name: 'Blood Tonic', desc: 'Heal 40 HP' },
-  twin: { name: 'Twin Barrel', desc: '+1 bullet per shot' },
-  bounce: { name: 'Rubber Rounds', desc: 'Bullets ricochet off walls' },
-  heavy: { name: 'Heavy Slugs', desc: '+50% knockback, +20% damage' },
+  sigil: { name: 'Twin Sigil', desc: { archer: '+1 arrow per shot', knight: 'Slash arc +30°, reach +15%' } },
+  ricochet: { name: 'Ricochet Charm', desc: { archer: 'Arrows ricochet off walls twice', knight: 'Deflected shots ricochet and hit 50% harder' } },
+  heavy: { name: 'Heavy Hand', desc: '+50% knockback dealt, +20% damage' },
   fang: { name: 'Vampire Fang', desc: 'Heal 4 HP per kill' },
-  boots: { name: 'Quickstep Boots', desc: '+15% speed, faster dash' },
-  pierce: { name: 'Bone Piercer', desc: 'Bullets pierce one enemy' },
+  boots: { name: 'Quickstep Boots', desc: { archer: '+12% speed, slides recharge 25% faster', knight: '+12% speed, bash recharges 25% faster' } },
+  charm: { name: 'Marrow Charm', desc: { archer: '+1 Pin Trap charge, arrows pierce one more enemy', knight: '+1 Shield Bash charge, +25 guard' } },
 };
 
-export type StatKind = 'vit' | 'pow' | 'rof' | 'spd' | 'dash' | 'kick';
+export const itemInfo = (k: ItemKind, c: CharKind) => ({ name: ITEM_TEXT[k].name, desc: perKit(ITEM_TEXT[k].desc, c) });
 
-export const STAT_INFO: Record<StatKind, { name: string; desc: string }> = {
+export type StatKind = 'vit' | 'pow' | 'atk' | 'spd' | 'ability' | 'special';
+
+const STAT_TEXT: Record<StatKind, Record<CharKind, { name: string; desc: string }> | { name: string; desc: string }> = {
   vit: { name: 'Vitality', desc: '+25 max HP, heal 25' },
-  pow: { name: 'Power', desc: '+30% bullet damage' },
-  rof: { name: 'Trigger Finger', desc: '+20% fire rate' },
+  pow: { name: 'Power', desc: '+30% damage' },
+  atk: { archer: { name: 'Quick Draw', desc: 'Full draw 20% faster' }, knight: { name: 'Swift Blade', desc: 'Slash recovers 20% faster' } },
   spd: { name: 'Fleet Foot', desc: '+12% move speed' },
-  dash: { name: 'Blink', desc: '-25% dash cooldown' },
-  kick: { name: 'Mule Kick', desc: '+50% kick force, 2x kick dmg' },
+  ability: { archer: { name: 'Light Step', desc: 'Slides recharge 30% faster' }, knight: { name: 'Bash Drill', desc: 'Shield Bash recharges 30% faster' } },
+  special: {
+    archer: { name: 'Barbed Traps', desc: 'Traps root 50% longer, deal 12 damage, recharge faster' },
+    knight: { name: 'Bulwark', desc: '+40 guard, blocked hits cost 30% less guard' },
+  },
 };
+
+export function statInfo(s: StatKind, c: CharKind): { name: string; desc: string } {
+  const t = STAT_TEXT[s];
+  return 'name' in t ? (t as { name: string; desc: string }) : (t as Record<CharKind, { name: string; desc: string }>)[c];
+}
 
 /** Reliable (JSON text) channel. Inputs, pings and snapshots use the binary channel in shared/net/snapshot.ts. */
 export type ClientMsg =
-  | { t: 'create'; name: string }
-  | { t: 'join'; code: string; name: string }
+  | { t: 'create'; name: string; char: CharKind }
+  | { t: 'join'; code: string; name: string; char: CharKind }
   | { t: 'rejoin'; code: string; token: string }
   | { t: 'choose'; idx: number }
   | { t: 'restart' };
 
+/** Everything the client needs to predict its own kit: controller tunables plus projectile modifiers. */
 export interface PlayerStats {
   speed: number;
-  dashCd: number;
-  fireCd: number;
+  atkCd: number;
+  abCd: number;
+  abMax: number;
+  specCd: number;
+  specMax: number;
+  drawTicks: number;
+  guardMax: number;
   multishot: number;
   bounce: number;
   pierce: number;
   bulletR: number;
+  /** Knight slash half-angle (radians) and reach (px). */
+  arc: number;
+  reach: number;
 }
 
 /** Rarely-changing per-player data, sent reliably on change instead of in every snapshot. */
 export interface PlayerMeta {
   id: number;
   name: string;
+  char: CharKind;
   items: ItemKind[];
   choices: StatKind[] | null;
   stats: PlayerStats;
@@ -84,6 +149,7 @@ export interface PlayerSnap {
   id: number;
   name: string;
   c: number;
+  k: CharKind;
   x: number;
   y: number;
   aim: number;
@@ -94,14 +160,18 @@ export interface PlayerSnap {
   xpNext: number;
   down: boolean;
   rev: number;
-  dash: boolean;
   inv: boolean;
+  off: boolean;
+  /** Knight shield raised / leading a bash. */
+  block: boolean;
+  /** Movement mode (see MODE in shared/sim/movement). */
+  mode: number;
+  /** Archer draw fraction 0..1. */
+  draw: number;
   items: ItemKind[];
   choices: StatKind[] | null;
   pending: number;
   kills: number;
-  dashCd: number;
-  off: boolean;
 }
 
 export interface EnemySnap {
@@ -113,6 +183,7 @@ export interface EnemySnap {
   maxHp: number;
   a: number;
   s: number;
+  rooted: boolean;
 }
 
 export interface BulletSnap {
@@ -123,6 +194,7 @@ export interface BulletSnap {
   vy: number;
   e: boolean;
   r: number;
+  arrow: boolean;
   /** Owning player id (0 = enemy) and the input seq/index that spawned it (0 = not predicted). */
   o: number;
   sq: number;
@@ -138,6 +210,14 @@ export interface PropSnap {
   y: number;
 }
 
+export interface TrapSnap {
+  id: number;
+  x: number;
+  y: number;
+  /** Owner's player color index. */
+  c: number;
+}
+
 export interface ItemSnap {
   id: number;
   x: number;
@@ -146,7 +226,7 @@ export interface ItemSnap {
 }
 
 export type GameEvent =
-  | { e: 'shot'; x: number; y: number; a: number; p: number }
+  | { e: 'shot'; x: number; y: number; a: number; p: number; pw: number }
   | { e: 'eshot'; x: number; y: number; a: number }
   | { e: 'hit'; x: number; y: number; a: number; who: 'enemy' | 'player'; id: number; dmg: number; by?: number; sq?: number; bi?: number }
   | { e: 'die'; x: number; y: number; k: EnemyKind; a: number; id: number; by?: number }
@@ -154,8 +234,14 @@ export type GameEvent =
   | { e: 'fall'; x: number; y: number; who: 'enemy' | 'player' }
   | { e: 'pickup'; x: number; y: number; k: ItemKind; p: number }
   | { e: 'level'; p: number; lvl: number }
-  | { e: 'kick'; x: number; y: number; a: number; p: number }
-  | { e: 'dash'; x: number; y: number; p: number }
+  | { e: 'slash'; x: number; y: number; a: number; p: number; arc: number; reach: number }
+  | { e: 'bash'; x: number; y: number; a: number; p: number }
+  | { e: 'slide'; x: number; y: number; p: number }
+  | { e: 'sprint'; x: number; y: number; p: number }
+  | { e: 'trap'; x: number; y: number; x0: number; y0: number; p: number }
+  | { e: 'snare'; x: number; y: number; id: number }
+  | { e: 'block'; x: number; y: number; a: number; p: number; broke?: boolean }
+  | { e: 'shove'; x: number; y: number; a: number }
   | { e: 'burn'; x: number; y: number }
   | { e: 'spark'; x: number; y: number; p?: number }
   | { e: 'slam'; x: number; y: number }
@@ -179,6 +265,7 @@ export interface WorldView {
   bullets: BulletSnap[];
   barrels: PropSnap[];
   items: ItemSnap[];
+  traps: TrapSnap[];
 }
 
 export interface FloorMsg {

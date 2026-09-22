@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { PLAYER_COLORS, T, TILE } from '../shared/protocol';
+import { PLAYER_COLORS, T, TILE, type CharKind } from '../shared/protocol';
 
 type Pal = Record<string, string>;
 
@@ -9,18 +9,22 @@ function canvasTex(scene: Phaser.Scene, key: string, w: number, h: number) {
   return { tex, ctx: tex.getContext() };
 }
 
-export function fromRows(scene: Phaser.Scene, key: string, rows: string[], pal: Pal) {
-  const h = rows.length;
-  const w = Math.max(...rows.map((r) => r.length));
-  const { tex, ctx } = canvasTex(scene, key, w, h);
+function paintRows(ctx: CanvasRenderingContext2D, rows: string[], pal: Pal, scale = 1) {
   rows.forEach((row, y) =>
     [...row].forEach((ch, x) => {
       const c = pal[ch];
       if (!c) return;
       ctx.fillStyle = c;
-      ctx.fillRect(x, y, 1, 1);
+      ctx.fillRect(x * scale, y * scale, scale, scale);
     }),
   );
+}
+
+export function fromRows(scene: Phaser.Scene, key: string, rows: string[], pal: Pal) {
+  const h = rows.length;
+  const w = Math.max(...rows.map((r) => r.length));
+  const { tex, ctx } = canvasTex(scene, key, w, h);
+  paintRows(ctx, rows, pal);
   tex.refresh();
 }
 
@@ -38,22 +42,73 @@ function hash(x: number, y: number, s = 0) {
 
 const K = '#140c18';
 
-const PLAYER = [
-  '....kkkk....',
-  '..kkHHHHkk..',
-  '.kHHHHHHHHk.',
-  '.kHHssssHHk.',
-  '.kHseesesHk.',
-  '.kHssssssHk.',
-  '..kkssssskk.',
-  '.kbbbbbbbbk.',
-  'ksbBbbbbBbsk',
-  'kkbBbbbbBbkk',
-  '.kbbllllbbk.',
-  '..kbbkkbbk..',
-  '..kddkkddk..',
+/** Hooded, light, a quiver of fletchings over the shoulder. H = hood (player color). */
+const HERO_ARCHER = [
+  '.....kkk....',
+  '....kHHHk...',
+  '...kHHHHHk..',
+  '..kHHHHHHHk.',
+  '..kHHssssHk.',
+  '..kHsesesk..',
+  '..kHssssk...',
+  '.fkkHHHHkk..',
+  'fqkbbbbbbbk.',
+  'kqkbBbbbBbsk',
+  'kqkbllllbbkk',
+  '.kkbbbbbbk..',
+  '..kgk..kgk..',
+  '..kdk..kdk..',
   '..kkk..kkk..',
 ];
+
+/** Plate armor and a plumed great helm. P = plume, T = tabard (player color). */
+const HERO_KNIGHT = [
+  '....kPPk.....',
+  '...kPPPk.....',
+  '...kkkkkk....',
+  '..kmMMmmmk...',
+  '.kmMmmmmmmk..',
+  '.kmmkkkkkmk..',
+  '.kmmkeekkmk..',
+  '.kmmmmmmmmk..',
+  'kkMkkkkkkMkk.',
+  'kMmkTTTTkmMk.',
+  'kmmkTyyTkmmk.',
+  '.kkkTTTTkkk..',
+  '..kmmkkmmk...',
+  '..kmk..kmk...',
+  '.kkkk..kkkk..',
+];
+
+export const HERO_ROWS: Record<CharKind, string[]> = { archer: HERO_ARCHER, knight: HERO_KNIGHT };
+
+export function heroPalette(k: CharKind, c: string): Pal {
+  if (k === 'knight')
+    return { k: K, P: c, T: shade(c, 0.7), y: '#ffd23f', m: '#9aa0b4', M: '#dfe4f0', e: '#ff6a3a' };
+  return {
+    k: K,
+    H: shade(c, 0.85),
+    s: '#f2c29b',
+    e: '#1b1030',
+    b: '#4d6a34',
+    B: '#35492a',
+    l: '#6b4a2a',
+    g: '#3a2c1e',
+    d: '#2e2438',
+    q: '#8a5a2e',
+    f: '#f4f0e0',
+  };
+}
+
+/** Lobby portrait on a plain canvas, no Phaser needed. */
+export function drawPortrait(canvas: HTMLCanvasElement, k: CharKind, c: string, scale: number) {
+  const rows = HERO_ROWS[k];
+  canvas.width = 14 * scale;
+  canvas.height = rows.length * scale;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  paintRows(ctx, rows, heroPalette(k, c), scale);
+}
 
 const GRUNT = [
   'k..........k',
@@ -130,11 +185,11 @@ const ITEMS: Record<string, { rows: string[]; pal: Pal }> = {
     rows: ['..kkkk..', '..kwwk..', '...kk...', '..krrk..', '.krrwrk.', '.krrrrk.', '.krrrrk.', '..kkkk..'],
     pal: { k: K, w: '#ffd6e0', r: '#e8233f' },
   },
-  twin: {
-    rows: ['.kk..kk.', 'kwwk.kwwk', 'kyyk.kyyk', 'kyyk.kyyk', 'kyyk.kyyk', 'kook.kook', 'kook.kook', '.kk..kk.'],
-    pal: { k: K, w: '#fff6c0', y: '#ffc93c', o: '#c27a1a' },
+  sigil: {
+    rows: ['kkkkkkkk', 'kyykkyyk', 'kykkkkyk', 'kyykkyyk', 'kkykkykk', 'kyykkyyk', 'kykkkkyk', 'kkkkkkkk'],
+    pal: { k: '#3a2048', y: '#ffd23f' },
   },
-  bounce: {
+  ricochet: {
     rows: ['..kkkk..', '.kbbwbk.', 'kbbbbwbk', 'kbbbbbbk', 'kBbbbbbk', 'kBBbbbbk', '.kBBbbk.', '..kkkk..'],
     pal: { k: K, w: '#e8f8ff', b: '#3fa9ff', B: '#1d5fb0' },
   },
@@ -150,26 +205,20 @@ const ITEMS: Record<string, { rows: string[]; pal: Pal }> = {
     rows: ['..kkkk..', '..kbbk..', '..kbbk..', '..kbbk..', '..kbbbk.', '.kbbbbbk', 'kkkkkkkk', '.yy..yy.'],
     pal: { k: K, b: '#9a5a2e', y: '#ffe066' },
   },
-  pierce: {
-    rows: ['......kw', '.....kwk', '....kwk.', '...kwk..', 'k.kwk...', 'kkwk....', '.kkk....', 'kk.k....'],
-    pal: { k: K, w: '#f4f0e0' },
+  charm: {
+    rows: ['...kk...', '..kwwk..', '..kwwk..', '.kkwwkk.', 'kwwwwwwk', '.kkwwkk.', '..kwwk..', '..krrk..'],
+    pal: { k: K, w: '#f4f0e0', r: '#e8233f' },
   },
 };
 
 export function makePlayerTextures(scene: Phaser.Scene) {
   PLAYER_COLORS.forEach((c, i) => {
-    fromRows(scene, `player${i}`, PLAYER, {
-      k: K,
-      H: c,
-      s: '#f2c29b',
-      e: '#1b1030',
-      b: shade(c, 0.55),
-      B: shade(c, 0.4),
-      l: '#2a1c14',
-      d: '#2e2438',
-    });
+    for (const k of ['archer', 'knight'] as const) fromRows(scene, `hero_${k}${i}`, HERO_ROWS[k], heroPalette(k, c));
+    fromRows(scene, `shield${i}`, SHIELD, { k: K, m: '#9aa0b4', M: '#dfe4f0', T: c, y: '#ffd23f' });
   });
 }
+
+const SHIELD = ['kkkkkkk', 'kMTTTmk', 'kMTyTmk', 'kMTTTmk', 'kMmTmmk', '.kmTmk.', '.kmmmk.', '..kmk..', '...k...'];
 
 export function makeTextures(scene: Phaser.Scene) {
   makePlayerTextures(scene);
@@ -179,7 +228,17 @@ export function makeTextures(scene: Phaser.Scene) {
   fromRows(scene, 'barrel', BARREL, { k: K, R: '#8a1f24', r: '#c8312e', o: '#d8503a', O: '#f07050', y: '#ffd23f' });
   for (const [k, v] of Object.entries(ITEMS)) fromRows(scene, `item_${k}`, v.rows, v.pal);
 
-  fromRows(scene, 'gun', ['.kkkkkkk.', 'kgggggggk', 'kGGkkkkk.', 'kGk......', '.k.......'], { k: K, g: '#9aa0b0', G: '#5a5f70' });
+  fromRows(scene, 'bow', ['kk...', 'wwk..', '.wwk.', '..wk.', '..wwk', '..wwk', '..wwk', '..wk.', '.wwk.', 'wwk..', 'kk...'], { k: K, w: '#b0783a' });
+  fromRows(scene, 'sword', ['...kk.........', '..kyyk.kkkkkk.', 'kbbkyyWwwwwwwk', '..kyyk.kkkkkk.', '...kk.........'], {
+    k: K,
+    b: '#6b3a22',
+    y: '#ffd23f',
+    w: '#cfd6e6',
+    W: '#ffffff',
+  });
+  fromRows(scene, 'arrowshot', ['f....k..', '.fwwwwhh', 'f....k..'], { f: '#f4f0e0', w: '#c89050', h: '#dfe4f0', k: '#8a8a9a' });
+  fromRows(scene, 'nock', ['f....', '.fwww', 'f....'], { f: '#f4f0e0', w: '#c89050' });
+  fromRows(scene, 'trap', ['f.f', '.f.', '.w.', '.w.', 'kwk'], { f: '#f4f0e0', w: '#c89050', k: K });
   fromRows(scene, 'bullet', ['.oyyyw', 'oyyyww', '.oyyyw'], { o: '#ff8a1f', y: '#ffe066', w: '#ffffff' });
   fromRows(scene, 'ebullet', ['.mmmm.', 'mppppm', 'mpwwpm', 'mpwwpm', 'mppppm', '.mmmm.'], { m: '#a01890', p: '#ff4fd8', w: '#ffffff' });
   fromRows(scene, 'flash', ['...w...', '..wyw..', '.wyyyw.', 'wyyWyyw', '.wyyyw.', '..wyw..', '...w...'], { w: '#ffb13b', y: '#ffe066', W: '#ffffff' });

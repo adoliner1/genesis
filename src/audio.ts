@@ -60,11 +60,45 @@ function throttle(k: string, ms: number) {
 }
 
 export const sfx = {
-  shot(local: boolean) {
+  shot(local: boolean, power = 0.5) {
     if (!throttle('shot' + local, 30)) return;
     const v = local ? 1 : 0.4;
-    noise(0.09, 0.5 * v, 3200, 0.8);
-    tone('square', 420, 90, 0.08, 0.12 * v);
+    tone('triangle', 520 + power * 380, 140, 0.12, (0.12 + power * 0.1) * v);
+    noise(0.06 + power * 0.06, 0.3 * v, 5000, 0.8, 'highpass');
+  },
+  fullDraw() {
+    tone('sine', 1400, 1800, 0.08, 0.06);
+  },
+  slash(local: boolean) {
+    if (!throttle('slash' + local, 40)) return;
+    const v = local ? 1 : 0.45;
+    noise(0.14, 0.4 * v, 3800, 1.2, 'bandpass');
+    tone('sawtooth', 300, 120, 0.1, 0.05 * v);
+  },
+  block() {
+    if (!throttle('block', 40)) return;
+    tone('square', 900, 700, 0.06, 0.1);
+    tone('triangle', 240, 180, 0.12, 0.15);
+    noise(0.05, 0.2, 6000, 1, 'highpass');
+  },
+  guardBreak() {
+    tone('sawtooth', 500, 80, 0.3, 0.18);
+    noise(0.25, 0.4, 2000);
+  },
+  bash() {
+    noise(0.12, 0.35, 900, 1.5);
+    tone('sine', 140, 60, 0.15, 0.3);
+  },
+  slide() {
+    noise(0.35, 0.18, 2400, 0.7, 'bandpass');
+  },
+  trap() {
+    tone('triangle', 700, 300, 0.06, 0.1);
+    noise(0.04, 0.2, 1500);
+  },
+  snare() {
+    tone('square', 180, 120, 0.2, 0.12);
+    tone('triangle', 900, 1200, 0.08, 0.08, 0.02);
   },
   eshot() {
     if (!throttle('eshot', 50)) return;

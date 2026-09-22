@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import {
+  CHAR_KINDS,
   ENEMY_R,
   FLOORS,
   MAX_PLAYERS,
@@ -8,6 +9,7 @@ import {
   TICK_RATE,
   TILE,
   spikeState,
+  type CharKind,
   type ClientMsg,
   type EnemyKind,
   type FloorMsg,
@@ -18,26 +20,20 @@ import {
   type ServerMsg,
   type StatKind,
 } from '../shared/protocol.ts';
-import { BTN_DASH, BTN_KICK, BTN_SHOOT, neutralInput, type PlayerInput } from '../shared/sim/input.ts';
+import { HELD_MASK, PRESS_MASK, neutralInput, type PlayerInput } from '../shared/sim/input.ts';
 import { collides, los, moveBody, solid, tileAt } from '../shared/sim/map.ts';
-import {
-  BULLET_LIFE,
-  BULLET_SPEED,
-  DT,
-  MUZZLE,
-  PLAYER_R,
-  gunner,
-  newMoveState,
-  pickMove,
-  shotAngles,
-  type MoveState,
-  type MoveStats,
-} from '../shared/sim/movement.ts';
+import { DT, MODE, PLAYER_R, newMoveState, pickMove, resetKit, type MoveState, type MoveStats, type StepResult } from '../shared/sim/movement.ts';
+import { KITS } from '../shared/sim/kits/index.ts';
+import { arrowShot, arrowVolley, trapSpot } from '../shared/sim/kits/archer.ts';
+import { shieldCovers } from '../shared/sim/kits/knight.ts';
 import { DEAD, BOUNCED, bulletHalfStep } from '../shared/sim/bullets.ts';
 import {
   B,
+  BF,
+  CHAR_WIRE,
   E,
   ENEMY_KINDS,
+  ES_ROOTED,
   I,
   ITEM_KINDS,
   X,
@@ -57,7 +53,12 @@ import { generateFloor, type FloorData } from './dungeon.ts';
 import { Vision, type Viewer } from './vision.ts';
 
 const START_FLOOR = Math.min(FLOORS, Math.max(1, Number(process.env.START_FLOOR) || 1));
-const STATS: StatKind[] = ['vit', 'pow', 'rof', 'spd', 'dash', 'kick'];
+const STATS: StatKind[] = ['vit', 'pow', 'atk', 'spd', 'ability', 'special'];
+const PASSIVES: ItemKind[] = ['sigil', 'ricochet', 'heavy', 'fang', 'boots', 'charm'];
+/** Wall impact speed (px/s) above which a launched player takes slam damage. */
+const PLAYER_SLAM = 170;
+const TRAP_LIFE = TICK_RATE * 12;
+const TRAPS_PER_PLAYER = 3;
 /** Furthest back (in ticks) the server will rewind targets for a shooter's view. */
 const MAX_REWIND = process.env.LAG_COMP === '0' ? 0 : 18;
 const HIST = 32;
@@ -93,12 +94,21 @@ interface Player extends MoveState, MoveStats {
   id: number;
   name: string;
   c: number;
+  char: CharKind;
   net: NetState;
   hp: number;
   maxHp: number;
-  dmg: number;
-  kickMult: number;
-  kickDmg: number;
+  /** Damage multiplier. */
+  pow: number;
+  knockTaken: number;
+  mass: number;
+  arc: number;
+  reach: number;
+  deflectMult: number;
+  guardCost: number;
+  trapRoot: number;
+  trapDmg: number;
+  bashHit: Set<number>;
   invuln: number;
   hazT: number;
   lvl: number;
@@ -138,6 +148,8 @@ interface Enemy {
   stagger: number;
   invuln: number;
   hazT: number;
+  root: number;
+  slow: number;
   aggro: boolean;
   dirX: number;
   dirY: number;
@@ -156,6 +168,7 @@ interface Bullet {
   vx: number;
   vy: number;
   enemy: boolean;
+  arrow: boolean;
   pid: number;
   seq: number;
   idx: number;
@@ -182,6 +195,17 @@ interface Barrel {
   vy: number;
   fuse: number;
   kicker: number;
+}
+
+interface Trap {
+  id: number;
+  x: number;
+  y: number;
+  pid: number;
+  c: number;
+  life: number;
+  /** Ticks until it can trigger (the arrow is still landing). */
+  arm: number;
 }
 
 interface Item {
@@ -217,6 +241,7 @@ export class Room {
   bullets: Bullet[] = [];
   barrels: Barrel[] = [];
   items: Item[] = [];
+  traps: Trap[] = [];
   events: GameEvent[] = [];
   tick = 0;
   phase: Phase = 'play';
@@ -247,12 +272,12 @@ export class Room {
     return [...this.players.values()].filter((p) => !p.net.offline);
   }
 
-  addPlayer(ws: WebSocket, name: string): Player | null {
+  addPlayer(ws: WebSocket, name: string, char: unknown): Player | null {
     if (this.players.size >= MAX_PLAYERS) return null;
     const used = new Set([...this.players.values()].map((p) => p.c));
     let c = 0;
     while (used.has(c)) c++;
-    const p = this.newPlayer(ws, name, c);
+    const p = this.newPlayer(ws, name, c, CHAR_KINDS.includes(char as CharKind) ? (char as CharKind) : 'archer');
     const anchor = this.online().find((o) => !o.down);
     const sx = anchor ? anchor.x : this.map.spawn.x;
     const sy = anchor ? anchor.y : this.map.spawn.y;
@@ -261,8 +286,8 @@ export class Room {
     const partyLvl = Math.max(0, ...[...this.players.values()].map((o) => o.lvl));
     const target = Math.max(partyLvl, 1 + (this.floor - 1) * 2);
     while (p.lvl < target) this.gainXp(p, p.xpNext - p.xp);
-    const passives: ItemKind[] = ['twin', 'bounce', 'heavy', 'fang', 'boots', 'pierce'];
-    for (let i = 0; i < (this.floor - 1) * 2; i++) this.applyItem(p, passives[Math.floor(Math.random() * passives.length)]);
+    for (let i = 0; i < (this.floor - 1) * 2; i++) this.applyItem(p, PASSIVES[Math.floor(Math.random() * PASSIVES.length)]);
+    resetKit(p, p);
     this.players.set(p.id, p);
     for (const e of this.enemies)
       if (e.k === 'boss' && e.hp === e.maxHp) e.hp = e.maxHp = Math.round(ENEMY_DEFS.boss.hp * (0.6 + 0.4 * this.players.size));
@@ -341,21 +366,28 @@ export class Room {
     };
   }
 
-  private newPlayer(ws: WebSocket | null, name: string, c: number): Player {
-    return {
+  private newPlayer(ws: WebSocket | null, name: string, c: number, char: CharKind): Player {
+    const kit = KITS[char];
+    const p: Player = {
       ...newMoveState(),
+      ...kit.stats,
       id: this.nextId++,
       name: name.slice(0, 14) || 'Crawler',
       c,
+      char,
       net: this.newNet(ws),
-      hp: 100,
-      maxHp: 100,
-      dmg: 10,
-      fireCd: 7,
-      speed: 92,
-      dashCd: 36,
-      kickMult: 1,
-      kickDmg: 6,
+      hp: kit.hp,
+      maxHp: kit.hp,
+      pow: 1,
+      knockTaken: kit.knockTaken,
+      mass: kit.mass,
+      arc: 1.22,
+      reach: 22,
+      deflectMult: 1,
+      guardCost: 1,
+      trapRoot: 36,
+      trapDmg: 0,
+      bashHit: new Set(),
       invuln: 30,
       hazT: 0,
       lvl: 1,
@@ -374,6 +406,8 @@ export class Room {
       safeY: 0,
       kills: 0,
     };
+    resetKit(p, p);
+    return p;
   }
 
   handle(p: Player, msg: ClientMsg) {
@@ -416,7 +450,7 @@ export class Room {
     if (!n.nextSeq) n.nextSeq = m.inputs[0].seq;
     for (const inp of m.inputs) {
       if (inp.seq >= n.nextSeq && inp.seq < n.nextSeq + 256 && !n.queue.has(inp.seq)) n.queue.set(inp.seq, inp);
-      else if (n.guessed.delete(inp.seq)) n.carry |= inp.buttons & (BTN_DASH | BTN_KICK);
+      else if (n.guessed.delete(inp.seq)) n.carry |= inp.buttons & PRESS_MASK;
     }
   }
 
@@ -429,7 +463,7 @@ export class Room {
       n.queue.delete(n.nextSeq);
       n.streak = 0;
     } else {
-      inp = ++n.streak > 4 ? { ...neutralInput(n.nextSeq), aim: n.last.aim } : { ...n.last, seq: n.nextSeq, buttons: n.last.buttons & BTN_SHOOT };
+      inp = ++n.streak > 4 ? { ...neutralInput(n.nextSeq), aim: n.last.aim } : { ...n.last, seq: n.nextSeq, buttons: n.last.buttons & HELD_MASK };
       n.starved++;
       n.guessed.add(n.nextSeq);
       if (n.guessed.size > 64) n.guessed.delete(n.guessed.values().next().value!);
@@ -446,7 +480,7 @@ export class Room {
   private restartRun() {
     this.runSeed = (Math.random() * 1e9) | 0;
     for (const [id, old] of this.players) {
-      const p = this.newPlayer(null, old.name, old.c);
+      const p = this.newPlayer(null, old.name, old.c, old.char);
       p.id = id;
       p.net = old.net;
       p.net.metaKey = '';
@@ -467,6 +501,7 @@ export class Room {
     this.bullets = [];
     this.items = [];
     this.barrels = [];
+    this.traps = [];
     this.stairsOpen = false;
     for (const e of this.map.enemies) this.spawnEnemy(e.k, e.x, e.y, false);
     for (const b of this.map.barrels) this.barrels.push({ id: this.nextId++, ...b, vx: 0, vy: 0, fuse: -1, kicker: 0 });
@@ -476,7 +511,7 @@ export class Room {
       p.x = p.safeX = this.map.spawn.x + ((i % 2) * 2 - 1) * 8;
       p.y = p.safeY = this.map.spawn.y + (i > 1 ? 10 : 0);
       p.vx = p.vy = 0;
-      p.dashing = 0;
+      p.mode = p.act = p.draw = p.swing = 0;
       p.invuln = 45;
       if (p.down) {
         p.down = false;
@@ -523,6 +558,8 @@ export class Room {
       stagger: 0,
       invuln: 0,
       hazT: 0,
+      root: 0,
+      slow: 0,
       aggro: aggro || k === 'boss',
       dirX: 0,
       dirY: 0,
@@ -682,15 +719,35 @@ export class Room {
     }
   }
 
-  private damagePlayer(p: Player, dmg: number, dx: number, dy: number, knock: number, ignoreDash = false) {
-    if (p.down || p.net.offline || p.invuln > 0 || (p.dashing > 0 && !ignoreDash) || this.phase !== 'play') return;
+  /** (dx, dy) points from the source to the player. Blockable hits from the front are soaked by a raised shield. */
+  private damagePlayer(p: Player, dmg: number, dx: number, dy: number, knock: number, blockable = true) {
+    if (p.down || p.net.offline || p.invuln > 0 || this.phase !== 'play') return;
+    let stagger = 6;
+    if (blockable && (dx || dy) && shieldCovers(p, Math.atan2(-dy, -dx))) {
+      this.drainGuard(p, dmg * 2);
+      dmg *= 0.35;
+      knock *= 0.3;
+      stagger = 2;
+    }
     p.hp -= dmg;
     p.invuln = 16;
-    p.vx += dx * knock;
-    p.vy += dy * knock;
-    p.stagger = 6;
+    p.vx += dx * knock * p.knockTaken;
+    p.vy += dy * knock * p.knockTaken;
+    p.stagger = Math.max(p.stagger, stagger);
     this.events.push({ e: 'hit', x: r1(p.x), y: r1(p.y), a: r1(Math.atan2(dy, dx)), who: 'player', id: p.id, dmg: Math.round(dmg) });
     if (p.hp <= 0) this.downPlayer(p);
+  }
+
+  private drainGuard(p: Player, cost: number) {
+    p.guard -= cost * p.guardCost;
+    p.guardT = 20;
+    const broke = p.guard <= 0;
+    if (broke) {
+      p.guard = -30;
+      p.block = 0;
+      this.events.push({ e: 'msg', text: `${p.name}'s guard broke!` });
+    }
+    this.events.push({ e: 'block', x: r1(p.x + Math.cos(p.aim) * 6), y: r1(p.y + Math.sin(p.aim) * 6), a: r1(p.aim), p: p.id, ...(broke ? { broke } : {}) });
   }
 
   private downPlayer(p: Player) {
@@ -732,20 +789,28 @@ export class Room {
         if (!p.down) p.hp = Math.min(p.maxHp, p.hp + 25);
         break;
       case 'pow':
-        p.dmg *= 1.3;
+        p.pow *= 1.3;
         break;
-      case 'rof':
-        p.fireCd /= 1.2;
+      case 'atk':
+        if (p.char === 'archer') p.drawTicks = Math.max(15, Math.round(p.drawTicks * 0.8));
+        else p.atkCd *= 0.8;
         break;
       case 'spd':
         p.speed *= 1.12;
         break;
-      case 'dash':
-        p.dashCd *= 0.75;
+      case 'ability':
+        p.abCd *= 0.7;
         break;
-      case 'kick':
-        p.kickMult *= 1.5;
-        p.kickDmg *= 2;
+      case 'special':
+        if (p.char === 'archer') {
+          p.trapRoot = Math.round(p.trapRoot * 1.5);
+          p.trapDmg += 12;
+          p.specCd *= 0.8;
+        } else {
+          p.guardMax += 40;
+          p.guard += 40;
+          p.guardCost *= 0.7;
+        }
         break;
     }
   }
@@ -755,26 +820,39 @@ export class Room {
       case 'potion':
         p.hp = Math.min(p.maxHp, p.hp + 40);
         return;
-      case 'twin':
-        p.multishot++;
+      case 'sigil':
+        if (p.char === 'archer') p.multishot++;
+        else {
+          p.arc += 0.26;
+          p.reach *= 1.15;
+        }
         break;
-      case 'bounce':
+      case 'ricochet':
         p.bounce += 2;
+        if (p.char === 'knight') p.deflectMult *= 1.5;
         break;
       case 'heavy':
         p.knock *= 1.5;
-        p.dmg *= 1.2;
-        p.bulletR += 1;
+        p.pow *= 1.2;
+        if (p.char === 'archer') p.bulletR += 1;
         break;
       case 'fang':
         p.lifesteal += 4;
         break;
       case 'boots':
-        p.speed *= 1.15;
-        p.dashCd *= 0.8;
+        p.speed *= 1.12;
+        p.abCd *= 0.75;
         break;
-      case 'pierce':
-        p.pierce++;
+      case 'charm':
+        if (p.char === 'archer') {
+          p.specMax++;
+          p.spec++;
+          p.pierce++;
+        } else {
+          p.abMax++;
+          p.ab++;
+          p.guardMax += 25;
+        }
         break;
     }
     p.items.push(k);
@@ -823,6 +901,7 @@ export class Room {
       vx,
       vy,
       enemy: true,
+      arrow: false,
       pid: 0,
       seq: 0,
       idx: 0,
@@ -841,26 +920,18 @@ export class Room {
     };
   }
 
-  private fire(p: Player, inp: PlayerInput) {
+  private fire(p: Player, inp: PlayerInput, res: StepResult) {
     const lag = this.viewLag(inp);
-    shotAngles(p.aim, p.multishot, inp.seq).forEach((a, i) => {
-      const b = this.newBullet(p.x + Math.cos(p.aim) * MUZZLE, p.y + Math.sin(p.aim) * MUZZLE, Math.cos(a) * BULLET_SPEED, Math.sin(a) * BULLET_SPEED);
-      Object.assign(b, {
-        enemy: false,
-        pid: p.id,
-        seq: inp.seq,
-        idx: i,
-        lag,
-        dmg: p.dmg,
-        knock: 110 * p.knock,
-        life: BULLET_LIFE,
-        bounce: p.bounce,
-        pierce: p.pierce,
-        r: p.bulletR,
-      });
+    const shot = arrowVolley(p.x, p.y, p.aim, res.power, res.still, p, inp.seq);
+    const base = arrowShot(res.power, res.still);
+    const dmg = base.dmg * p.pow;
+    const knock = base.knock * p.knock;
+    for (const a of shot) {
+      const b = this.newBullet(a.x, a.y, a.vx, a.vy);
+      Object.assign(b, { enemy: false, arrow: true, pid: p.id, seq: inp.seq, idx: a.idx, lag, dmg, knock, life: a.life, bounce: a.bounce, pierce: a.pierce, r: a.r });
       this.bullets.push(b);
-    });
-    this.events.push({ e: 'shot', x: r1(p.x), y: r1(p.y), a: r1(p.aim), p: p.id });
+    }
+    this.events.push({ e: 'shot', x: r1(p.x), y: r1(p.y), a: r1(p.aim), p: p.id, pw: r1(res.power) });
   }
 
   private enemyShoot(e: Enemy, a: number, speed = 125, dmg = 9) {
@@ -871,42 +942,83 @@ export class Room {
     this.bullets.push(b);
   }
 
-  private kick(p: Player, inp: PlayerInput) {
+  private placeTrap(p: Player) {
+    const [x, y] = trapSpot(this.map, p.x, p.y, p.aim);
+    const mine = this.traps.filter((t) => t.pid === p.id);
+    if (mine.length >= TRAPS_PER_PLAYER) this.traps.splice(this.traps.indexOf(mine[0]), 1);
+    this.traps.push({ id: this.nextId++, x, y, pid: p.id, c: p.c, life: TRAP_LIFE, arm: 4 });
+    this.events.push({ e: 'trap', x: r1(x), y: r1(y), x0: r1(p.x), y0: r1(p.y), p: p.id });
+  }
+
+  private inArc(p: Player, x: number, y: number, range: number) {
+    const dx = x - p.x;
+    const dy = y - p.y;
+    const d = len(dx, dy);
+    return d < range && (d < 6 || angDiff(Math.atan2(dy, dx), p.aim) < p.arc);
+  }
+
+  private slash(p: Player, inp: PlayerInput) {
     const a = p.aim;
     const cx = Math.cos(a);
     const cy = Math.sin(a);
     const seen = this.tick - this.viewLag(inp);
-    this.events.push({ e: 'kick', x: r1(p.x + cx * 8), y: r1(p.y + cy * 8), a: r1(a), p: p.id });
-    const inCone = (x: number, y: number, range: number) => {
-      const dx = x - p.x;
-      const dy = y - p.y;
-      const d = len(dx, dy);
-      return d < range && (d < 6 || angDiff(Math.atan2(dy, dx), a) < 0.95);
-    };
+    this.events.push({ e: 'slash', x: r1(p.x), y: r1(p.y), a: r1(a), p: p.id, arc: r1(p.arc), reach: r1(p.reach) });
     for (const e of this.enemies) {
       const [ex, ey] = this.posAt(e, seen);
-      if (inCone(ex, ey, 20 + e.r) || inCone(e.x, e.y, 20 + e.r)) this.damageEnemy(e, p.kickDmg, cx, cy, 380 * p.kickMult, p.id, 22);
+      if (this.inArc(p, ex, ey, p.reach + e.r) || this.inArc(p, e.x, e.y, p.reach + e.r)) {
+        const n = len(e.x - p.x, e.y - p.y) || 1;
+        this.damageEnemy(e, 20 * p.pow, ((e.x - p.x) / n + cx) / 2, ((e.y - p.y) / n + cy) / 2, 300 * p.knock, p.id, 14);
+      }
     }
     for (const b of this.barrels)
-      if (inCone(b.x, b.y, 26)) {
-        b.vx = cx * 320 * p.kickMult;
-        b.vy = cy * 320 * p.kickMult;
+      if (this.inArc(p, b.x, b.y, p.reach + 6)) {
+        b.vx = cx * 300 * p.knock;
+        b.vy = cy * 300 * p.knock;
         b.kicker = p.id;
       }
+  }
+
+  /** Runs every tick of the slash's active window: enemy shots inside the arc go back the way the knight faces. */
+  private deflect(p: Player, inp: PlayerInput) {
+    const cx = Math.cos(p.aim);
+    const cy = Math.sin(p.aim);
     for (const b of this.bullets)
-      if (b.enemy && inCone(b.x, b.y, 28)) {
+      if (b.enemy && this.inArc(p, b.x, b.y, p.reach + 8)) {
         b.enemy = false;
         b.pid = p.id;
         b.seq = 0;
         b.lag = this.viewLag(inp);
-        b.dmg = 18;
-        b.knock = 160;
+        b.dmg = (b.dmg + 12) * p.pow * p.deflectMult;
+        b.knock = 170 * p.knock;
         b.life = 60;
-        const sp = len(b.vx, b.vy) * 1.6;
+        b.bounce = p.bounce;
+        const sp = Math.min(420, len(b.vx, b.vy) * 1.6);
         b.vx = cx * sp;
         b.vy = cy * sp;
         b.dirty = true;
         this.events.push({ e: 'deflect', x: r1(b.x), y: r1(b.y) });
+      }
+  }
+
+  private bashShove(p: Player, inp: PlayerInput) {
+    const cx = Math.cos(p.aim);
+    const cy = Math.sin(p.aim);
+    const seen = this.tick - this.viewLag(inp);
+    for (const e of this.enemies) {
+      if (e.hp <= 0 || p.bashHit.has(e.id)) continue;
+      const [ex, ey] = this.posAt(e, seen);
+      const reach = e.r + PLAYER_R + 5;
+      if (len(ex - p.x, ey - p.y) < reach || len(e.x - p.x, e.y - p.y) < reach) {
+        p.bashHit.add(e.id);
+        this.damageEnemy(e, 8 * p.pow, cx, cy, 360 * p.knock, p.id, 20);
+        this.events.push({ e: 'shove', x: r1((e.x + p.x) / 2), y: r1((e.y + p.y) / 2), a: r1(p.aim) });
+      }
+    }
+    for (const b of this.barrels)
+      if (len(b.x - p.x, b.y - p.y) < 13) {
+        b.vx = cx * 280;
+        b.vy = cy * 280;
+        b.kicker = p.id;
       }
   }
 
@@ -933,6 +1045,7 @@ export class Room {
       this.updateEnemies();
       this.updateBullets();
       this.updateBarrels();
+      this.updateTraps();
       this.separate();
       this.updateItems();
       this.updateRevives();
@@ -1001,11 +1114,20 @@ export class Room {
 
   private eventVisible(team: number, e: GameEvent): boolean {
     switch (e.e) {
-      case 'shot':
-      case 'kick':
-      case 'dash':
       case 'pickup':
         return true;
+      case 'shot':
+      case 'slash':
+      case 'bash':
+      case 'slide':
+      case 'sprint':
+      case 'trap':
+      case 'block': {
+        // A teammate's own actions are always known; anyone else's only where the team can see them.
+        const o = this.players.get(e.p);
+        if (o && this.teamOf(o) === team) return true;
+        break;
+      }
       case 'hit':
       case 'fall':
         if (e.who === 'player') return true;
@@ -1016,7 +1138,7 @@ export class Room {
   /** The snapshot a team is allowed to receive: teammates always, everything else only inside its streamed vision. */
   private teamWorld(world: World, team: number, feed: TeamFeed): World {
     const v = this.vision;
-    const [players, enemies, bullets, barrels, items] = world.tables;
+    const [players, enemies, bullets, barrels, items, traps] = world.tables;
     const seen = (row: number[], ix: number, iy: number, r: number) => v.streamed(team, dpos(row[ix]), dpos(row[iy]), r);
     const pl: Table = new Map();
     for (const [id, row] of players) {
@@ -1048,13 +1170,19 @@ export class Room {
     for (const [id, row] of barrels) if (seen(row, X.x, X.y, 6)) ba.set(id, row);
     const it: Table = new Map();
     for (const [id, row] of items) if (seen(row, I.x, I.y, 4)) it.set(id, row);
-    return { ...world, tables: [pl, en, bu, ba, it] };
+    const tr: Table = new Map();
+    for (const t of this.traps) {
+      const owner = this.players.get(t.pid);
+      if ((owner && this.teamOf(owner) === team) || v.streamed(team, t.x, t.y, 3)) tr.set(t.id, traps.get(t.id)!);
+    }
+    return { ...world, tables: [pl, en, bu, ba, it, tr] };
   }
 
   private buildWorld(): World {
     const players: Table = new Map();
     for (const p of [...this.players.values()].sort((a, b) => a.id - b.id)) {
-      const flags = (p.down ? PF.down : 0) | (p.dashing > 0 ? PF.dash : 0) | (p.invuln > 0 ? PF.inv : 0) | (p.net.offline ? PF.off : 0);
+      const flags =
+        (p.down ? PF.down : 0) | (p.block || (p.char === 'knight' && p.mode === MODE.bash) ? PF.block : 0) | (p.invuln > 0 ? PF.inv : 0) | (p.net.offline ? PF.off : 0);
       players.set(p.id, [
         qpos(p.x),
         qpos(p.y),
@@ -1068,8 +1196,10 @@ export class Room {
         p.xpNext,
         p.kills,
         p.pending.length,
-        Math.round(Math.min(1, Math.max(0, p.dashT) / p.dashCd) * 255),
         p.c,
+        CHAR_WIRE.indexOf(p.char),
+        p.mode,
+        p.char === 'archer' ? Math.round(Math.min(1, p.draw / p.drawTicks) * 255) : 0,
       ]);
     }
     const enemies: Table = new Map();
@@ -1081,7 +1211,7 @@ export class Room {
         Math.max(0, Math.ceil(e.hp)),
         e.maxHp,
         qang8(e.a),
-        e.stagger > 0 && e.k !== 'boss' ? 3 : e.s,
+        (e.stagger > 0 && e.k !== 'boss' ? 3 : e.s) | (e.root > 0 || e.slow > 0 ? ES_ROOTED : 0),
       ]);
     const bullets: Table = new Map();
     for (const b of this.bullets)
@@ -1091,7 +1221,7 @@ export class Room {
         qpos(b.y0),
         Math.round(b.vx),
         Math.round(b.vy),
-        (b.enemy ? 1 : 0) | (Math.min(7, b.r) << 1),
+        (b.enemy ? BF.enemy : 0) | (Math.min(7, b.r) << 1) | (b.arrow ? BF.arrow : 0),
         b.enemy ? 0 : b.pid,
         b.enemy ? 0 : b.seq,
         b.idx,
@@ -1100,6 +1230,8 @@ export class Room {
     for (const b of this.barrels) barrels.set(b.id, [qpos(b.x), qpos(b.y)]);
     const items: Table = new Map();
     for (const it of this.items) items.set(it.id, [ITEM_KINDS.indexOf(it.k), qpos(it.x), qpos(it.y)]);
+    const traps: Table = new Map();
+    for (const t of this.traps) traps.set(t.id, [qpos(t.x), qpos(t.y), t.c]);
     return {
       tick: this.tick,
       ep: this.ep,
@@ -1107,7 +1239,7 @@ export class Room {
       floor: this.floor,
       left: this.enemies.length,
       stairs: this.stairsOpen,
-      tables: [players, enemies, bullets, barrels, items],
+      tables: [players, enemies, bullets, barrels, items, traps],
     };
   }
 
@@ -1130,16 +1262,24 @@ export class Room {
     return [...this.players.values()].map((p) => ({
       id: p.id,
       name: p.name,
+      char: p.char,
       items: p.items,
       choices: p.pending[0] ?? null,
       stats: {
         speed: p.speed,
-        dashCd: p.dashCd,
-        fireCd: p.fireCd,
+        atkCd: p.atkCd,
+        abCd: p.abCd,
+        abMax: p.abMax,
+        specCd: p.specCd,
+        specMax: p.specMax,
+        drawTicks: p.drawTicks,
+        guardMax: p.guardMax,
         multishot: p.multishot,
         bounce: p.bounce,
         pierce: p.pierce,
         bulletR: p.bulletR,
+        arc: p.arc,
+        reach: p.reach,
       },
     }));
   }
@@ -1174,21 +1314,39 @@ export class Room {
   private stepPlayer(p: Player, inp: PlayerInput): boolean {
     p.invuln--;
     p.hazT--;
-    const res = gunner.step(p, p, inp, this.map);
+    const res = KITS[p.char].controller.step(p, p, inp, this.map);
     if (p.down) return false;
-    if (res.dashed) this.events.push({ e: 'dash', x: r1(p.x), y: r1(p.y), p: p.id });
-    if (res.fired) this.fire(p, inp);
-    if (res.kicked) this.kick(p, inp);
+    if (res.ability) {
+      if (p.char === 'knight') {
+        p.bashHit.clear();
+        this.events.push({ e: 'bash', x: r1(p.x), y: r1(p.y), a: r1(p.aim), p: p.id });
+      } else this.events.push({ e: 'sprint', x: r1(p.x), y: r1(p.y), p: p.id });
+    }
+    if (res.slide) this.events.push({ e: 'slide', x: r1(p.x), y: r1(p.y), p: p.id });
+    if (res.fire) this.fire(p, inp, res);
+    if (res.trap) this.placeTrap(p);
+    if (res.slash) this.slash(p, inp);
+    if (p.swing > 0) this.deflect(p, inp);
+    if (p.mode === MODE.bash) this.bashShove(p, inp);
+    if (res.impact > PLAYER_SLAM && p.invuln < 16 && !p.net.offline) {
+      const dmg = Math.round((res.impact - PLAYER_SLAM) / 10);
+      if (dmg > 0) {
+        p.hp -= dmg;
+        this.events.push({ e: 'slam', x: r1(p.x), y: r1(p.y) });
+        this.events.push({ e: 'hit', x: r1(p.x), y: r1(p.y), a: 0, who: 'player', id: p.id, dmg });
+        if (p.hp <= 0) this.downPlayer(p);
+      }
+    }
 
     const tile = this.tileAt(p.x, p.y);
-    if (p.dashing <= 0) {
+    if (p.mode !== MODE.bash) {
       if (tile === T.Pit) {
         this.events.push({ e: 'fall', x: r1(p.x), y: r1(p.y), who: 'player' });
         p.x = p.safeX;
         p.y = p.safeY;
         p.vx = p.vy = 0;
         p.invuln = 0;
-        this.damagePlayer(p, 15, 0, 0, 0, true);
+        this.damagePlayer(p, 15, 0, 0, 0, false);
         p.invuln = 40;
         return false;
       }
@@ -1200,7 +1358,7 @@ export class Room {
       }
       if (tile === T.Spikes && spikeState(this.tick, Math.floor(p.x / TILE), Math.floor(p.y / TILE)) === 2) {
         const a = Math.random() * Math.PI * 2;
-        this.damagePlayer(p, 14, Math.cos(a), Math.sin(a), 90);
+        this.damagePlayer(p, 14, Math.cos(a), Math.sin(a), 90, false);
       }
     }
     if (tile === T.Floor) {
@@ -1222,6 +1380,8 @@ export class Room {
       e.hazT--;
       e.atkT--;
       e.cd--;
+      e.root--;
+      e.slow--;
       const [t, dist] = this.nearestPlayer(e.x, e.y);
       if (t && !e.aggro && this.tick % 6 === e.id % 6 && dist < 170 && this.los(e.x, e.y, t.x, t.y)) e.aggro = true;
 
@@ -1267,8 +1427,16 @@ export class Room {
         e.vy *= 0.86;
         if (e.k === 'brute' || e.k === 'boss') e.s = 0;
       } else if (selfDriven) {
-        e.vx += (wantX * e.speed - e.vx) * 0.22;
-        e.vy += (wantY * e.speed - e.vy) * 0.22;
+        const sp = e.speed * (e.slow > 0 ? 0.45 : 1);
+        e.vx += (wantX * sp - e.vx) * 0.22;
+        e.vy += (wantY * sp - e.vy) * 0.22;
+      }
+      if (e.stagger <= 0 && e.root > 0) {
+        e.vx = e.vy = 0;
+        if (e.k === 'brute' && e.s === 2) e.s = 0;
+      } else if (e.slow > 0 && !selfDriven) {
+        e.vx *= 0.93;
+        e.vy *= 0.93;
       }
       const preSpeed = len(e.vx, e.vy);
       const impact = this.move(e, e.r, e.stagger > 0 ? 0.35 : 0);
@@ -1478,8 +1646,12 @@ export class Room {
         } else {
           for (const p of this.players.values()) {
             if (p.down || p.net.offline) continue;
-            if (len(p.x - b.x, p.y - b.y) < PLAYER_R + b.r) {
-              if (p.dashing > 0) continue;
+            const d = len(p.x - b.x, p.y - b.y);
+            if (d < PLAYER_R + b.r + 3 && shieldCovers(p, Math.atan2(-b.vy, -b.vx))) {
+              this.drainGuard(p, b.dmg * 2.2);
+              continue outer;
+            }
+            if (d < PLAYER_R + b.r) {
               const sp = len(b.vx, b.vy) || 1;
               this.damagePlayer(p, b.dmg, b.vx / sp, b.vy / sp, b.knock);
               continue outer;
@@ -1526,7 +1698,7 @@ export class Room {
   private separate() {
     type Body = { x: number; y: number; r: number; m: number; ref: { x: number; y: number } };
     const bodies: Body[] = [];
-    for (const p of this.players.values()) bodies.push({ x: p.x, y: p.y, r: PLAYER_R, m: 1, ref: p });
+    for (const p of this.players.values()) bodies.push({ x: p.x, y: p.y, r: PLAYER_R, m: p.mode === MODE.bash ? p.mass * 3 : p.mass, ref: p });
     for (const e of this.enemies) if (e.hp > 0) bodies.push({ x: e.x, y: e.y, r: e.r, m: e.mass, ref: e });
     for (const b of this.barrels) bodies.push({ x: b.x, y: b.y, r: 6, m: 3, ref: b });
     for (let i = 0; i < bodies.length; i++)
@@ -1551,6 +1723,28 @@ export class Room {
   private nudge(o: { x: number; y: number }, dx: number, dy: number, r: number) {
     if (!this.collides(o.x + dx, o.y, r)) o.x += dx;
     if (!this.collides(o.x, o.y + dy, r)) o.y += dy;
+  }
+
+  private updateTraps() {
+    this.traps = this.traps.filter((t) => {
+      if (--t.life <= 0) return false;
+      if (--t.arm > 0) return true;
+      for (const e of this.enemies) {
+        if (e.hp <= 0 || len(e.x - t.x, e.y - t.y) > e.r + 4) continue;
+        const owner = this.players.get(t.pid);
+        const root = owner?.trapRoot ?? 36;
+        if (e.k === 'boss') e.slow = Math.max(e.slow, root * 2);
+        else {
+          e.root = Math.max(e.root, root);
+          e.slow = Math.max(e.slow, root + 30);
+        }
+        e.aggro = true;
+        if (owner?.trapDmg) this.damageEnemy(e, owner.trapDmg * owner.pow, 0, 0, 0, owner.id, 0);
+        this.events.push({ e: 'snare', x: r1(e.x), y: r1(e.y), id: e.id });
+        return false;
+      }
+      return true;
+    });
   }
 
   private updateItems() {
