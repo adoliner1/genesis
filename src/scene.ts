@@ -536,18 +536,19 @@ export class GameScene extends Phaser.Scene {
     const cy = y - 3;
     const dir = v?.swingDir ?? 1;
     const from = a - arc * dir;
-    const steps = 10;
+    const steps = 12;
+    const inner = (t: number) => reach * (0.85 - 0.45 * t);
     for (let i = 0; i < steps; i++) {
       const t0 = i / steps;
       const t1 = (i + 1) / steps;
       const a0 = from + 2 * arc * dir * t0;
       const a1 = from + 2 * arc * dir * t1;
-      g.fillStyle(0xffffff, 0.25 + 0.6 * t1);
+      g.fillStyle(0xffffff, 0.2 + 0.6 * t1);
       g.beginPath();
-      g.moveTo(x + Math.cos(a0) * reach * 0.45, cy + Math.sin(a0) * reach * 0.45);
+      g.moveTo(x + Math.cos(a0) * inner(t0), cy + Math.sin(a0) * inner(t0));
       g.lineTo(x + Math.cos(a0) * reach, cy + Math.sin(a0) * reach);
       g.lineTo(x + Math.cos(a1) * reach, cy + Math.sin(a1) * reach);
-      g.lineTo(x + Math.cos(a1) * reach * 0.6, cy + Math.sin(a1) * reach * 0.6);
+      g.lineTo(x + Math.cos(a1) * inner(t1), cy + Math.sin(a1) * inner(t1));
       g.closePath();
       g.fillPath();
     }
@@ -595,7 +596,7 @@ export class GameScene extends Phaser.Scene {
 
   private fxSlide(pid: number, x: number, y: number, local: boolean) {
     this.afterimages(pid, 3, 45);
-    this.fx.smoke(x, y + 2, 8, 7, 0x8a8090);
+    this.fx.smoke(x, y + 2, 4, 5, 0x8a8090);
     sfx.slide();
     if (local) this.trauma = Math.min(1, this.trauma + 0.05);
   }
@@ -980,7 +981,7 @@ export class GameScene extends Phaser.Scene {
           wpn.setDepth(depth + 0.001);
         }
       }
-      if (sliding && moving && Math.random() < 0.6) this.fx.smoke(v.x - mvx * 0.02, v.y + 1, 1, 3, knight ? 0x9a9098 : 0x8a8090);
+      if (sliding && moving && Math.random() < 0.25) this.fx.smoke(v.x, v.y + 1, 1, 2, 0x8a8090);
       if (knight && mode === MODE.skid && Math.random() < 0.5) this.fx.sparks(v.x, v.y + 1, 1, 0xffe066, 50);
       if (sprinting && moving && Math.random() < 0.25) this.fx.smoke(v.x, v.y + 1, 1, 2, 0x6a6070);
       name.setPosition(v.x, v.y - 16).setVisible(!mine);
