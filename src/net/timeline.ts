@@ -44,19 +44,22 @@ export class Timeline {
 
     this.samples.push({ at: now, v: w.tick * TICK_MS - now });
     while (this.samples.length && this.samples[0].at < now - WINDOW_MS) this.samples.shift();
-    let max = -Infinity;
+    // Mean arrival offset plus a spread margin; a max filter is too optimistic when delivery is bursty.
     let sum = 0;
-    for (const x of this.samples) {
-      if (x.v > max) max = x.v;
-      sum += x.v;
-    }
+    for (const x of this.samples) sum += x.v;
     const mean = sum / this.samples.length;
     let varSum = 0;
     for (const x of this.samples) varSum += (x.v - mean) ** 2;
     this.jitterMs = Math.sqrt(varSum / this.samples.length);
-    this.offset = max;
-    const want = this.sendInterval + 0.35 + (2.2 * this.jitterMs) / TICK_MS;
+    this.offset = Number.isFinite(this.offset) && this.samples.length > 5 ? this.offset + (mean - this.offset) * 0.1 : mean;
+    const want = this.sendInterval + 0.5 + (2.5 * this.jitterMs) / TICK_MS;
     this.delayTicks += (Math.max(1.5, Math.min(10, want)) - this.delayTicks) * 0.05;
+  }
+
+  /** How far behind the newest received snapshot we are actually rendering. */
+  behindLatest() {
+    const l = this.latest();
+    return l ? l.tick - this.renderTick : NaN;
   }
 
   /** Newest server tick we believe exists right now (fractional). */

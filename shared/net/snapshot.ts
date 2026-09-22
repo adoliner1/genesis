@@ -61,6 +61,8 @@ export interface Personal {
   ack: number;
   /** Server-side input queue depth after consuming this tick's input (drives client pacing). */
   buf: number;
+  /** Running count (mod 65536) of ticks the server had no input for this client and had to guess. */
+  starved: number;
   self: MoveState | null;
   events: [number, GameEvent[]][];
 }
@@ -111,6 +113,7 @@ export function encodeSnapshot(cur: World, base: World | null, me: Personal): Ui
 
   w.u32(me.ack);
   w.i8(Math.max(-128, Math.min(127, me.buf)));
+  w.u16(me.starved);
   w.u8(me.self ? 1 : 0);
   if (me.self) for (const k of MOVE_KEYS) w.f32(Number(me.self[k]));
 
@@ -171,6 +174,7 @@ export function decodeSnapshot(buf: Uint8Array, baseline: (tick: number) => Worl
 
   const ack = r.u32();
   const bufDepth = r.i8();
+  const starved = r.u16();
   let self: MoveState | null = null;
   if (r.u8()) {
     self = newMoveState();
@@ -206,7 +210,7 @@ export function decodeSnapshot(buf: Uint8Array, baseline: (tick: number) => Worl
   const events = evBytes.length ? (JSON.parse(dec.decode(evBytes)) as [number, GameEvent[]][]) : [];
   return {
     world: { tick, ep, phase, floor, left, stairs, tables },
-    me: { ack, buf: bufDepth, self, events },
+    me: { ack, buf: bufDepth, starved, self, events },
     baseTick,
   };
 }

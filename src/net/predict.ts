@@ -20,6 +20,19 @@ const EPS = 0.02;
 /** Corrections larger than this snap instead of blending (teleports, floor changes). */
 const SNAP_PX = 40;
 
+function worstField(a: MoveState, b: MoveState) {
+  let key = '';
+  let worst = -1;
+  for (const k of ['x', 'y', 'vx', 'vy', 'dashing', 'dashT', 'fireT', 'kickT', 'stagger', 'down'] as const) {
+    const d = Math.abs(Number(a[k]) - Number(b[k])) * (k === 'vx' || k === 'vy' ? 0.05 : 1);
+    if (d > worst) {
+      worst = d;
+      key = k;
+    }
+  }
+  return key;
+}
+
 export interface LocalBullet {
   id: number;
   seq: number;
@@ -60,6 +73,10 @@ export class Predictor {
   corrections = 0;
   snaps = 0;
   lastErr = 0;
+  lastErrKey = '';
+  /** Correction counts by size: <1px, 1-4px, 4-16px, >16px. */
+  errBuckets = [0, 0, 0, 0];
+  errKeys: Record<string, number> = {};
   replayed = 0;
   serverState: MoveState | null = null;
   bullets: LocalBullet[] = [];
@@ -102,6 +119,9 @@ export class Predictor {
       if (h?.after) {
         this.corrections++;
         this.lastErr = err;
+        this.lastErrKey = worstField(h.after, server);
+        this.errKeys[this.lastErrKey] = (this.errKeys[this.lastErrKey] ?? 0) + 1;
+        this.errBuckets[err < 1 ? 0 : err < 4 ? 1 : err < 16 ? 2 : 3]++;
       }
       const s = copyMove(server);
       let prev = copyMove(s);
@@ -177,7 +197,7 @@ export class Predictor {
    * Fly own bullets on the predicted timeline against targets as currently displayed.
    * Impacts are cosmetic (the bullet disappears, a spark plays); damage stays server-side.
    */
-  stepBullets(enemies: Target[], barrels: Target[], onImpact: (x: number, y: number, what: 'wall' | 'enemy' | 'barrel', id: number) => void) {
+  stepBullets(enemies: Target[], barrels: Target[], onImpact: (x: number, y: number, what: 'wall' | 'enemy' | 'barrel', id: number, seq: number) => void) {
     if (!this.map) return;
     const keep: LocalBullet[] = [];
     outer: for (const b of this.bullets) {
@@ -187,20 +207,20 @@ export class Predictor {
         const st = bulletHalfStep(b, this.map);
         if (st === BOUNCED) {
           b.hit.clear();
-          onImpact(b.x, b.y, 'wall', 0);
+          onImpact(b.x, b.y, 'wall', 0, b.seq);
         } else if (st === DEAD) {
-          onImpact(b.x, b.y, 'wall', 0);
+          onImpact(b.x, b.y, 'wall', 0, b.seq);
           continue outer;
         }
         for (const br of barrels)
           if (Math.hypot(br.x - b.x, br.y - b.y) < 7 + b.r) {
-            onImpact(b.x, b.y, 'barrel', br.id);
+            onImpact(b.x, b.y, 'barrel', br.id, b.seq);
             continue outer;
           }
         for (const e of enemies) {
           if (b.hit.has(e.id) || Math.hypot(e.x - b.x, e.y - b.y) >= e.r + b.r) continue;
           b.hit.add(e.id);
-          onImpact(b.x, b.y, 'enemy', e.id);
+          onImpact(b.x, b.y, 'enemy', e.id, b.seq);
           if (b.pierce > 0) b.pierce--;
           else continue outer;
         }

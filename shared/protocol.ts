@@ -148,7 +148,7 @@ export interface ItemSnap {
 export type GameEvent =
   | { e: 'shot'; x: number; y: number; a: number; p: number }
   | { e: 'eshot'; x: number; y: number; a: number }
-  | { e: 'hit'; x: number; y: number; a: number; who: 'enemy' | 'player'; id: number; dmg: number; by?: number }
+  | { e: 'hit'; x: number; y: number; a: number; who: 'enemy' | 'player'; id: number; dmg: number; by?: number; sq?: number }
   | { e: 'die'; x: number; y: number; k: EnemyKind; a: number; id: number; by?: number }
   | { e: 'boom'; x: number; y: number; r: number }
   | { e: 'fall'; x: number; y: number; who: 'enemy' | 'player' }

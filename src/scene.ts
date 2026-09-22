@@ -649,7 +649,7 @@ export class GameScene extends Phaser.Scene {
     if (this.bot && latest && myPos) {
       const meSnap = latest.players.find((p) => p.id === c.myId);
       const players = latest.players.map((p) => (p.id === c.myId ? { ...p, x: myPos[0], y: myPos[1] } : p));
-      this.auto = meSnap ? this.bot.step({ ...latest, players, bullets }, c.myId, now) : null;
+      this.auto = meSnap ? this.bot.step({ ...latest, players, enemies: view?.enemies ?? latest.enemies, bullets }, c.myId, now) : null;
     }
 
     if (view && latest) this.drawEntities(view, latest, dt, this.aim);

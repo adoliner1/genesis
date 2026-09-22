@@ -91,7 +91,10 @@ export class NetClient {
   latestTick = 0;
   seqOffset = NaN;
   bufEma = 0;
-  bufTarget = 1.5;
+  bufTarget = 2;
+  starved = 0;
+  private starveBoost = 0;
+  private lastStarved = -1;
   pace = 1;
   rtt = 0;
   rttJitter = 0;
@@ -100,6 +103,11 @@ export class NetClient {
   baseMisses = 0;
   staleDrops = 0;
   deadIds = new Set<number>();
+  predictedHits = 0;
+  confirmedHits = 0;
+  hitMatch = { both: 0, predictedOnly: 0, overkill: 0, serverOnly: 0 };
+  private killed = new Set<number>();
+  private predHitKeys = new Map<string, number>();
   private worlds = new Map<number, World>();
   private inputs: PlayerInput[] = [];
   private acc = 0;
@@ -143,6 +151,7 @@ export class NetClient {
     this.worlds.clear();
     this.tl.clear();
     this.latestTick = 0;
+    this.lastStarved = -1;
     this.seqOffset = NaN;
     this.inputs = [];
     this.deferred = [];
@@ -188,7 +197,14 @@ export class NetClient {
       this.seqOffset = Number.isNaN(this.seqOffset) || Math.abs(off - this.seqOffset) > 4 ? off : this.seqOffset + (off - this.seqOffset) * 0.1;
     }
     this.bufEma += (me.buf - this.bufEma) * 0.08;
-    this.bufTarget = Math.max(1, Math.min(5, 0.8 + (this.tl.jitterMs + this.rttJitter) / TICK_MS));
+    if (this.lastStarved >= 0) {
+      const d = (me.starved - this.lastStarved + 65536) % 65536;
+      this.starved += d;
+      if (d) this.starveBoost = Math.min(2.5, this.starveBoost + 0.25 * d);
+    }
+    this.lastStarved = me.starved;
+    this.starveBoost = Math.max(0, this.starveBoost - 0.004);
+    this.bufTarget = Math.max(1.5, Math.min(5, 1.2 + (0.8 * (this.tl.jitterMs + this.rttJitter)) / TICK_MS + this.starveBoost));
     this.pace = 1 + Math.max(-0.08, Math.min(0.08, (this.bufEma - this.bufTarget) * 0.03));
     this.latest = this.buildView(world);
   }
@@ -209,10 +225,16 @@ export class NetClient {
         break;
       case 'hit':
         now = e.who === 'player' ? e.id === me : e.by === me;
+        if (e.who === 'enemy' && e.by === me) {
+          this.confirmedHits++;
+          if (e.sq && this.predHitKeys.delete(`${e.sq}:${e.id}`)) this.hitMatch.both++;
+          else if (e.sq) this.hitMatch.serverOnly++;
+        }
         break;
       case 'die':
         now = e.by === me;
         if (now) this.deadIds.add(e.id);
+        this.killed.add(e.id);
         break;
     }
     if (now) this.hooks?.event(e);
@@ -243,7 +265,7 @@ export class NetClient {
     if (this.acc > interval * 8) this.acc = interval;
     while (this.acc >= interval) {
       this.acc -= interval;
-      this.tick();
+      this.tick(this.tl.renderTick - this.acc / TICK_MS);
     }
     this.alpha = this.acc / interval;
 
@@ -251,18 +273,35 @@ export class NetClient {
     while (this.deferred.length && this.deferred[0][0] <= rt) this.hooks?.event(this.deferred.shift()![1]);
   }
 
-  private tick() {
+  /** One fixed input tick; `renderTick` is where remote entities were on screen at that moment. */
+  private auditHits(now: number) {
+    for (const [k, t] of this.predHitKeys)
+      if (now - t > 1500) {
+        this.predHitKeys.delete(k);
+        if (this.killed.has(Number(k.split(':')[1]))) this.hitMatch.overkill++;
+        else this.hitMatch.predictedOnly++;
+      }
+  }
+
+  private tick(renderTick: number) {
+    this.auditHits(performance.now());
     const raw = this.hooks?.input() ?? { mx: 0, my: 0, aim: 0, shoot: false, dash: false, kick: false };
-    const rt = Number.isFinite(this.tl.renderTick) ? this.tl.renderTick : 0;
+    const rt = Number.isFinite(renderTick) ? renderTick : 0;
     const inp = quantizeInput(this.pred.seq + 1, raw.mx, raw.my, raw.aim, raw.shoot, raw.dash, raw.kick, rt);
     const res = this.pred.step(inp);
     const s = this.pred.state;
     if (res && s && (res.fired || res.kicked || res.dashed)) this.hooks?.predicted(res, s.x, s.y, s.aim);
-    const view = this.sample();
+    const view = this.sample(rt);
     if (view) {
       const enemies: Target[] = view.enemies.map((e) => ({ id: e.id, x: e.x, y: e.y, r: ENEMY_R[e.k] }));
       const barrels: Target[] = view.barrels.map((b) => ({ id: b.id, x: b.x, y: b.y, r: 6 }));
-      this.pred.stepBullets(enemies, barrels, (x, y, what, id) => this.hooks?.impact(x, y, what, id));
+      this.pred.stepBullets(enemies, barrels, (x, y, what, id, seq) => {
+        if (what === 'enemy') {
+          this.predictedHits++;
+          this.predHitKeys.set(`${seq}:${id}`, performance.now());
+        }
+        this.hooks?.impact(x, y, what, id);
+      });
     }
     this.inputs.push(inp);
     if (this.inputs.length > REDUNDANCY) this.inputs.shift();
@@ -360,8 +399,8 @@ export class NetClient {
   }
 
   /** Remote entities interpolated at the render tick. Bullets are left empty; see renderBullets. */
-  sample(): WorldView | null {
-    const br = this.tl.bracket(this.tl.renderTick);
+  sample(t = this.tl.renderTick): WorldView | null {
+    const br = this.tl.bracket(t);
     if (!br) return null;
     const { a, b, f } = br;
     const pos = (ra: number[], rb: number[] | undefined, ix: number, iy: number): [number, number] => {
@@ -393,7 +432,7 @@ export class NetClient {
       return { id, x, y };
     });
     const items = [...it].map(([id, r]): ItemSnap => ({ id, k: ITEM_KINDS[r[I.k]] ?? 'potion', x: dpos(r[I.x]), y: dpos(r[I.y]) }));
-    return { tick: this.tl.renderTick, phase: a.phase, floor: a.floor, left: a.left, stairs: a.stairs, players, enemies, bullets: [], barrels, items };
+    return { tick: t, phase: a.phase, floor: a.floor, left: a.left, stairs: a.stairs, players, enemies, bullets: [], barrels, items };
   }
 
   /**

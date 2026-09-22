@@ -18,7 +18,7 @@ import {
   type ServerMsg,
   type StatKind,
 } from '../shared/protocol.ts';
-import { BTN_SHOOT, neutralInput, type PlayerInput } from '../shared/sim/input.ts';
+import { BTN_DASH, BTN_KICK, BTN_SHOOT, neutralInput, type PlayerInput } from '../shared/sim/input.ts';
 import { collides, los, moveBody, solid, tileAt } from '../shared/sim/map.ts';
 import {
   BULLET_LIFE,
@@ -53,11 +53,11 @@ import { generateFloor, type FloorData } from './dungeon.ts';
 const START_FLOOR = Math.min(FLOORS, Math.max(1, Number(process.env.START_FLOOR) || 1));
 const STATS: StatKind[] = ['vit', 'pow', 'rof', 'spd', 'dash', 'kick'];
 /** Furthest back (in ticks) the server will rewind targets for a shooter's view. */
-const MAX_REWIND = 12;
-const HIST = 16;
+const MAX_REWIND = process.env.LAG_COMP === '0' ? 0 : 18;
+const HIST = 32;
 const WORLD_HISTORY = 64;
 /** Input queue depth above which the server fast-forwards a player to cut latency. */
-const MAX_INPUT_BUF = 6;
+const MAX_INPUT_BUF = 12;
 const OFFLINE_TICKS = TICK_RATE * 90;
 
 interface NetState {
@@ -71,6 +71,9 @@ interface NetState {
   ack: number;
   buf: number;
   starved: number;
+  /** Seqs the server had to guess; a late copy's dash/kick is carried into the next input. */
+  guessed: Set<number>;
+  carry: number;
   snapAck: number;
   metaKey: string;
 }
@@ -210,6 +213,7 @@ export class Room {
   worlds = new Map<number, World>();
   eventLog: [number, GameEvent[]][] = [];
   bytesOut = 0;
+  lagLog: number[] = [];
 
   constructor(code: string) {
     this.code = code;
@@ -258,7 +262,7 @@ export class Room {
       old.close();
     }
     const wasOffline = p.net.offline;
-    Object.assign(p.net, { ws, offline: false, queue: new Map(), nextSeq: 0, snapAck: 0, metaKey: '', buf: 0 });
+    Object.assign(p.net, { ws, offline: false, queue: new Map(), guessed: new Set(), carry: 0, nextSeq: 0, snapAck: 0, metaKey: '', buf: 0 });
     p.invuln = Math.max(p.invuln, 45);
     this.greet(p);
     if (wasOffline) this.events.push({ e: 'msg', text: `${p.name} reconnected` });
@@ -302,6 +306,8 @@ export class Room {
       ack: 0,
       buf: 0,
       starved: 0,
+      guessed: new Set(),
+      carry: 0,
       snapAck: 0,
       metaKey: '',
     };
@@ -374,8 +380,10 @@ export class Room {
     if (m.ackTick > n.snapAck && m.ackTick <= this.tick) n.snapAck = m.ackTick;
     if (!m.inputs.length) return;
     if (!n.nextSeq) n.nextSeq = m.inputs[m.inputs.length - 1].seq;
-    for (const inp of m.inputs)
+    for (const inp of m.inputs) {
       if (inp.seq >= n.nextSeq && inp.seq < n.nextSeq + 256 && !n.queue.has(inp.seq)) n.queue.set(inp.seq, inp);
+      else if (n.guessed.delete(inp.seq)) n.carry |= inp.buttons & (BTN_DASH | BTN_KICK);
+    }
   }
 
   /** Pops this tick's input. A missing input is replaced by the last one (minus one-shot buttons). */
@@ -387,6 +395,12 @@ export class Room {
     else {
       inp = { ...n.last, seq: n.nextSeq, buttons: n.last.buttons & BTN_SHOOT };
       n.starved++;
+      n.guessed.add(n.nextSeq);
+      if (n.guessed.size > 64) n.guessed.delete(n.guessed.values().next().value!);
+    }
+    if (n.carry) {
+      inp = { ...inp, buttons: inp.buttons | n.carry };
+      n.carry = 0;
     }
     n.last = inp;
     n.ack = n.nextSeq++;
@@ -595,7 +609,7 @@ export class Room {
   }
 
   // ---------- combat helpers ----------
-  private damageEnemy(e: Enemy, dmg: number, dx: number, dy: number, knock: number, pid: number, stagger = 5) {
+  private damageEnemy(e: Enemy, dmg: number, dx: number, dy: number, knock: number, pid: number, stagger = 5, sq = 0) {
     if (e.hp <= 0) return;
     e.hp -= dmg;
     const kf = knock / e.mass;
@@ -603,7 +617,7 @@ export class Room {
     e.vy += dy * kf;
     if (e.k !== 'boss' || kf > 60) e.stagger = Math.max(e.stagger, stagger);
     e.aggro = true;
-    this.events.push({ e: 'hit', x: r1(e.x), y: r1(e.y), a: r1(Math.atan2(dy, dx)), who: 'enemy', id: e.id, dmg: Math.round(dmg), by: pid });
+    this.events.push({ e: 'hit', x: r1(e.x), y: r1(e.y), a: r1(Math.atan2(dy, dx)), who: 'enemy', id: e.id, dmg: Math.round(dmg), by: pid, ...(sq ? { sq } : {}) });
     if (e.hp <= 0) this.killEnemy(e, pid, Math.atan2(dy, dx));
     else if (e.k === 'boss' && !e.phase2 && e.hp < e.maxHp / 2) {
       e.phase2 = true;
@@ -909,6 +923,11 @@ export class Room {
       e.hy[hi] = e.y;
     }
 
+    if (process.env.DEBUG_LAG && this.tick % 150 === 0 && this.lagLog.length) {
+      const l = this.lagLog.sort((a, b) => a - b);
+      console.log(`[lag] hits ${l.length} rewind ticks min ${l[0].toFixed(1)} med ${l[l.length >> 1].toFixed(1)} max ${l[l.length - 1].toFixed(1)}`);
+      this.lagLog = [];
+    }
     const world = this.buildWorld();
     this.worlds.set(this.tick, world);
     this.worlds.delete(this.tick - WORLD_HISTORY);
@@ -987,7 +1006,7 @@ export class Room {
       const base = p.net.snapAck ? this.worlds.get(p.net.snapAck) ?? null : null;
       const since = base ? base.tick : this.tick - 1;
       const events = this.eventLog.filter(([t]) => t > since);
-      const bytes = encodeSnapshot(world, base, { ack: p.net.ack, buf: p.net.buf, self: pickMove(p), events });
+      const bytes = encodeSnapshot(world, base, { ack: p.net.ack, buf: p.net.buf, starved: p.net.starved & 0xffff, self: pickMove(p), events });
       this.sendBin(p, bytes);
     }
   }
@@ -1026,7 +1045,7 @@ export class Room {
       if (!inp) continue;
       if (this.stepPlayer(p, inp)) return;
       // Fast-forward through a backlog (e.g. after a lag spike) instead of carrying the delay.
-      for (let extra = 0; extra < 2 && p.net.queue.size > MAX_INPUT_BUF; extra++) {
+      if (p.net.queue.size > MAX_INPUT_BUF) {
         const more = this.takeInput(p);
         if (more && this.stepPlayer(p, more)) return;
       }
@@ -1332,7 +1351,8 @@ export class Room {
             const [ex, ey] = b.lag > 0 ? this.posAt(e, seen) : [e.x, e.y];
             if (len(ex - b.x, ey - b.y) < e.r + b.r) {
               const sp = len(b.vx, b.vy) || 1;
-              this.damageEnemy(e, b.dmg, b.vx / sp, b.vy / sp, b.knock, b.pid);
+              if (process.env.DEBUG_LAG) this.lagLog.push(b.lag);
+              this.damageEnemy(e, b.dmg, b.vx / sp, b.vy / sp, b.knock, b.pid, 5, b.seq);
               b.hit.add(e.id);
               if (b.pierce > 0) b.pierce--;
               else continue outer;
