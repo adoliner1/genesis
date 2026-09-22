@@ -55,7 +55,8 @@ function renderPick() {
   $('controls').innerHTML =
     `<li class="blurb">${info.blurb}</li><li><b>WASD</b> move · <b>Mouse</b> aim</li>` +
     info.controls.map(([k, d]) => `<li><b>${k}</b> ${d}</li>`).join('') +
-    '<li><b>1 2 3</b> pick level-up perk</li>';
+    '<li><b>1 2 3</b> pick level-up perk</li>' +
+    '<li><b>Middle-drag / screen edge</b> pan the camera · <b>Tab</b> watch teammates · <b>C</b> snap back</li>';
 }
 renderPick();
 if (roomParam) {

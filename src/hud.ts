@@ -98,7 +98,7 @@ export class Hud {
       if (me.k !== this.char) {
         this.char = me.k;
         this.lastItems = this.lastChoiceKey = '';
-        $('help').textContent = `WASD move · ${CHAR_INFO[me.k].help}`;
+        $('help').textContent = `WASD move · ${CHAR_INFO[me.k].help} · Middle-drag pan · Tab teammates · C recenter`;
       }
       const itemsKey = me.items.join();
       if (itemsKey !== this.lastItems) {
