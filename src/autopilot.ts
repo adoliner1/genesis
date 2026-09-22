@@ -115,7 +115,10 @@ export class Autopilot {
         this.lastFrontier = now;
         this.frontier = this.findFrontier();
       }
-      goals = this.frontier;
+      // Spread out so the party's shared vision covers more ground.
+      const mates = s.players.filter((p) => p.id !== myId && !p.off);
+      const apart = this.frontier.filter((f) => mates.every((m) => Math.hypot(f.x - m.x, f.y - m.y) > 160));
+      goals = apart.length ? apart : this.frontier;
     }
 
     if (goals.length) {

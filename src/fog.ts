@@ -50,7 +50,7 @@ export class FogState {
 
 /** Sub-cells per tile; each is a 4x4 world-pixel block, so the fog edge reads as chunky pixel art. */
 const SUB = 4;
-const EXPLORED = 0.625;
+const EXPLORED = 0.5;
 const LEVELS = 8;
 const FOG_RGB = [9, 5, 12];
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map((v) => (v + 0.5) / 16);
