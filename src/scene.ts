@@ -14,6 +14,7 @@ import {
 import { makeTextures, renderMap } from './sprites';
 import { Fx } from './fx';
 import { sfx } from './audio';
+import { Autopilot } from './autopilot';
 import type { Net } from './net';
 import type { Hud } from './hud';
 
@@ -83,6 +84,7 @@ export class GameScene extends Phaser.Scene {
   lastPhase = 'play';
   stairsWasOpen = false;
   unsub: () => void = () => {};
+  bot: Autopilot | null = null;
 
   constructor() {
     super('game');
@@ -109,8 +111,18 @@ export class GameScene extends Phaser.Scene {
     this.boot.hud.onChoose = (i) => this.choose(i);
     this.boot.hud.onRestart = () => this.boot.net.send({ t: 'restart' });
 
+    if (new URLSearchParams(location.search).has('bot')) this.bot = new Autopilot(() => this.map, (i) => this.choose(i));
     this.decals = this.add.renderTexture(0, 0, 16, 16).setOrigin(0).setDepth(2);
     this.fx = new Fx(this, this.decals);
+    this.fx.solid = (x, y) => {
+      const m = this.map;
+      if (!m) return false;
+      const tx = Math.floor(x / TILE);
+      const ty = Math.floor(y / TILE);
+      if (tx < 0 || ty < 0 || tx >= m.w || ty >= m.h) return true;
+      const t = m.tiles[ty * m.w + tx];
+      return t === T.Wall || t === T.Pit || t === T.Lava;
+    };
     this.unsub = this.boot.net.on((m) => this.onMsg(m));
     const f = this.boot.floor();
     if (f) this.loadFloor(f);
@@ -144,8 +156,9 @@ export class GameScene extends Phaser.Scene {
     this.mapKey = `map${++this.floorCount}`;
     renderMap(this, this.mapKey, f.w, f.h, tiles, f.seed, f.boss);
     this.mapImg = this.add.image(0, 0, this.mapKey).setOrigin(0).setDepth(0);
-    this.decals.resize(f.w * TILE, f.h * TILE);
-    this.decals.clear();
+    this.decals?.destroy();
+    this.decals = this.add.renderTexture(0, 0, f.w * TILE, f.h * TILE).setOrigin(0).setDepth(2);
+    this.fx.decals = this.decals;
     this.fx.parts = [];
     for (const s of this.spikes) s.img.destroy();
     for (const l of this.lava) l.img.destroy();
@@ -246,7 +259,7 @@ export class GameScene extends Phaser.Scene {
       const body = this.add.image(0, 0, `player${p.c}`).setOrigin(0.5, 0.8);
       const gun = this.add.image(0, 0, 'gun').setOrigin(0.15, 0.5);
       const name = this.add
-        .text(0, 0, p.name, { fontFamily: 'monospace', fontSize: '7px', color: PLAYER_COLORS[p.c], stroke: '#000', strokeThickness: 2 })
+        .text(0, 0, p.name, { fontFamily: 'monospace', fontSize: '5px', color: PLAYER_COLORS[p.c], stroke: '#000', strokeThickness: 2 })
         .setOrigin(0.5, 1)
         .setResolution(4)
         .setDepth(955);
@@ -556,7 +569,12 @@ export class GameScene extends Phaser.Scene {
     const meSnap = s?.players.find((p) => p.id === this.boot.myId);
     const meView = this.players.get(this.boot.myId);
     let aim = 0;
-    if (meView) aim = Math.atan2(wp.y - (meView.y - 3), wp.x - meView.x);
+    const auto = this.bot && s ? this.bot.step(s, this.boot.myId, now) : null;
+    if (auto && this.bot) {
+      aim = auto.aim;
+      wp.x = this.bot.aimX;
+      wp.y = this.bot.aimY;
+    } else if (meView) aim = Math.atan2(wp.y - (meView.y - 3), wp.x - meView.x);
 
     if (s) this.drawEntities(s, dt, aim);
     this.cross.setPosition(wp.x, wp.y);
@@ -590,7 +608,8 @@ export class GameScene extends Phaser.Scene {
     const my = (k.S.isDown || k.DOWN.isDown ? 1 : 0) - (k.W.isDown || k.UP.isDown ? 1 : 0);
     if (now - this.lastSend > 30 || this.wantDash || this.wantKick) {
       this.lastSend = now;
-      this.boot.net.send({
+      if (auto) this.boot.net.send({ t: 'input', ...auto });
+      else this.boot.net.send({
         t: 'input',
         mx,
         my,
@@ -627,7 +646,7 @@ export class GameScene extends Phaser.Scene {
       gun.setVisible(!p.down);
       gun.setPosition(v.x + Math.cos(aim) * 3, v.y - 4 + Math.sin(aim) * 3);
       gun.setRotation(aim).setFlipY(Math.cos(aim) < 0).setDepth(10 + v.y * 0.01 + (Math.sin(aim) > 0 ? 0.001 : -0.001));
-      name.setPosition(v.x, v.y - 15);
+      name.setPosition(v.x, v.y - 16).setVisible(p.id !== this.boot.myId);
       shadow.setPosition(v.x, v.y + 1);
       if (p.id !== this.boot.myId && !p.down) this.bar(o, v.x, v.y - 14, 14, p.hp / p.maxHp, 0xff3355);
       if (p.down) {

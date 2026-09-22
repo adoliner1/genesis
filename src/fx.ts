@@ -18,15 +18,15 @@ interface P {
 }
 
 const BLOOD = [0x8a0f1a, 0xb3141f, 0xd61f2a, 0x6a0a14];
-const GOO = [0x3f7a2a, 0x6fbf3c, 0x2a5a1c];
-const BONE = [0xe8e0c8, 0xb8b09a, 0x8a846e];
-const PURPLE = [0x5a2280, 0x8a3ab0, 0x3a1654];
+const GOO = [0x8a0f1a, 0xb3141f, 0x3f7a2a, 0x6fbf3c];
+const BONE = [0xe8e0c8, 0xb8b09a, 0x8a0f1a, 0x6a0a14];
+const PURPLE = [0x5a2280, 0x8a3ab0, 0x8a0f1a, 0xb3141f];
 
 export class Fx {
   parts: P[] = [];
   g: Phaser.GameObjects.Graphics;
   stampG: Phaser.GameObjects.Graphics;
-  pendingStamps = 0;
+  solid: (x: number, y: number) => boolean = () => false;
 
   constructor(
     private scene: Phaser.Scene,
@@ -97,10 +97,10 @@ export class Fx {
   scorch(x: number, y: number, r: number) {
     const g = this.stampG;
     g.clear();
-    g.fillStyle(0x0a0608, 0.45);
+    g.fillStyle(0x0a0608, 0.22);
     g.fillCircle(x, y, r);
-    g.fillStyle(0x0a0608, 0.4);
-    g.fillCircle(x, y, r * 0.6);
+    g.fillStyle(0x0a0608, 0.25);
+    g.fillCircle(x, y, r * 0.55);
     for (let i = 0; i < 14; i++) {
       const a = Math.random() * Math.PI * 2;
       const d = r * (0.8 + Math.random() * 0.6);
@@ -206,7 +206,7 @@ export class Fx {
         stamp: true,
       });
     }
-    this.scorch(x, y, r * 0.55);
+    this.scorch(x, y, r * 0.42);
   }
 
   update(dt: number) {
@@ -224,6 +224,7 @@ export class Fx {
       const dr = drag(p.drag);
       p.vx *= dr;
       p.vy *= dr;
+      if (p.stamp && this.solid(p.x, p.y)) continue;
       if (p.grav) {
         p.vz -= p.grav * dt;
         p.z += p.vz * dt;

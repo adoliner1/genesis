@@ -183,12 +183,11 @@ function genRegular(floor: number, rng: Rng): FloorData {
   const enemies: FloorData['enemies'] = [];
   const barrels: Spawn[] = [];
   const items: FloorData['items'] = [];
-  const perRoom = 1 + Math.min(floor, 3);
 
   for (const r of rooms) {
     if (r === spawnRoom) continue;
     const free = freeTiles(tiles, r, taken);
-    const n = ri(rng, perRoom, perRoom + 2);
+    const n = ri(rng, 1 + Math.floor(floor / 2), 2 + floor);
     for (let i = 0; i < n; i++) {
       const p = takeTile(rng, free, taken);
       if (p) enemies.push({ k: enemyMix(floor, rng), ...p });

@@ -21,7 +21,9 @@ export class Hud {
       setTimeout(() => ($('copy-link').textContent = 'Copy invite'), 1200);
     };
     $('restart').onclick = () => this.onRestart();
-    history.replaceState(null, '', `?room=${code}`);
+    const q = new URLSearchParams(location.search);
+    q.set('room', code);
+    history.replaceState(null, '', `?${q}`);
   }
 
   banner(text: string) {

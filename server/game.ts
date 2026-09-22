@@ -137,7 +137,7 @@ const ENEMY_DEFS: Record<EnemyKind, { hp: number; r: number; mass: number; speed
   grunt: { hp: 30, r: 6, mass: 1, speed: 58, xp: 6 },
   archer: { hp: 22, r: 5, mass: 0.9, speed: 48, xp: 8 },
   brute: { hp: 70, r: 8, mass: 2.4, speed: 40, xp: 14 },
-  boss: { hp: 1100, r: 14, mass: 12, speed: 42, xp: 0 },
+  boss: { hp: 2600, r: 14, mass: 12, speed: 42, xp: 0 },
 };
 
 const len = (x: number, y: number) => Math.hypot(x, y);
@@ -184,6 +184,8 @@ export class Room {
     p.x = p.safeX = sx + (c % 2 ? 8 : -8);
     p.y = p.safeY = sy + (c > 1 ? 8 : 0);
     this.players.set(p.id, p);
+    for (const e of this.enemies)
+      if (e.k === 'boss' && e.hp === e.maxHp) e.hp = e.maxHp = Math.round(ENEMY_DEFS.boss.hp * (0.6 + 0.4 * this.players.size));
     this.send(p, { t: 'joined', code: this.code, id: p.id });
     this.send(p, this.floorMsg);
     this.events.push({ e: 'msg', text: `${p.name} joined the party` });
