@@ -38,6 +38,7 @@ import { PLAYER_R, type StepResult } from '../../shared/sim/movement';
 import { Net } from './transport';
 import { Timeline } from './timeline';
 import { Predictor, type Target } from './predict';
+import { FogState } from '../fog';
 
 const TICK_MS = 1000 / TICK_RATE;
 const REDUNDANCY = 4;
@@ -87,6 +88,7 @@ export class NetClient {
   meta = new Map<number, PlayerMeta>();
   latest: WorldView | null = null;
   hooks: NetHooks | null = null;
+  fog = new FogState();
 
   latestTick = 0;
   seqOffset = NaN;
@@ -140,7 +142,10 @@ export class NetClient {
       this.tl.states = [];
       this.deferred = [];
       this.deadIds.clear();
+      this.fog.reset(this.map);
       this.hooks?.floor(m);
+    } else if (m.t === 'fog') {
+      if (this.floor?.ep === m.ep) this.fog.applyExplored(m.explored);
     } else if (m.t === 'meta') {
       this.meta = new Map(m.players.map((p) => [p.id, p]));
       const mine = this.meta.get(this.myId);
@@ -215,6 +220,8 @@ export class NetClient {
     this.bufTarget = Math.max(1.5, Math.min(5, 1.2 + (0.8 * (this.tl.jitterMs + this.rttJitter)) / TICK_MS + this.starveBoost));
     this.pace = 1 + Math.max(-0.08, Math.min(0.08, (this.bufEma - this.bufTarget) * 0.03));
     this.latest = this.buildView(world);
+    // Keeps the explored map growing even while the tab is in the background and not rendering.
+    this.fog.see(this.latest.players, false);
   }
 
   private routeEvent(tick: number, e: GameEvent) {

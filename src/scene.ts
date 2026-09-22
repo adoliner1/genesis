@@ -19,6 +19,9 @@ import { Autopilot, type BotOutput } from './autopilot';
 import type { NetClient, RawInput, RenderBullet } from './net/client';
 import type { Hud } from './hud';
 import type { DebugOverlay } from './debug';
+import { FogLayer } from './fog';
+import { CameraRig } from './camera';
+import type { Eye } from '../shared/sim/vision';
 
 interface View {
   spr: Phaser.GameObjects.Image;
@@ -30,6 +33,11 @@ interface View {
   extra?: Phaser.GameObjects.GameObject[];
   vx?: number;
   vy?: number;
+  /** Fade-in on first appearance so things arriving out of the fog don't pop. */
+  fade: number;
+  /** Props (barrels, items) stay drawn as a last-known memory once they leave sight. */
+  seen?: boolean;
+  ghost?: boolean;
 }
 
 export interface Boot {
@@ -62,8 +70,11 @@ export class GameScene extends Phaser.Scene {
   cross!: Phaser.GameObjects.Image;
   arrows: Phaser.GameObjects.Image[] = [];
   keys!: Record<string, Phaser.Input.Keyboard.Key>;
-  camX = 0;
-  camY = 0;
+  fog!: FogLayer;
+  rig!: CameraRig;
+  eyes: Eye[] = [];
+  camTag = document.getElementById('camtag');
+  camTagKey = '';
   trauma = 0;
   kickX = 0;
   kickY = 0;
@@ -109,7 +120,13 @@ export class GameScene extends Phaser.Scene {
     this.boot.hud.onChoose = (i) => this.choose(i);
     this.boot.hud.onRestart = () => this.client.net.sendJson({ t: 'restart' });
 
-    if (new URLSearchParams(location.search).has('bot')) this.bot = new Autopilot(() => this.map, (i) => this.choose(i));
+    this.fog = new FogLayer(this, this.client.fog);
+    this.rig = new CameraRig(this, () =>
+      [...this.players.keys()].filter((id) => id !== this.client.myId).sort((a, b) => a - b),
+    );
+    const q = new URLSearchParams(location.search);
+    this.rig.edgePan = q.get('edgepan') !== '0';
+    if (q.has('bot')) this.bot = new Autopilot(() => this.map, (i) => this.choose(i), () => this.client.fog.explored);
     this.decals = this.add.renderTexture(0, 0, 16, 16).setOrigin(0).setDepth(2);
     this.fx = new Fx(this, this.decals);
     this.fx.solid = (x, y) => {
@@ -228,7 +245,9 @@ export class GameScene extends Phaser.Scene {
     }
     this.stairsWasOpen = false;
     if (this.floorCount > 1) sfx.stairs();
-    this.camX = -1;
+    this.fog.reset(this.floorCount);
+    this.rig.snapBack();
+    this.rig.x = -1;
   }
 
   destroyView(v: View) {
@@ -236,7 +255,14 @@ export class GameScene extends Phaser.Scene {
     v.extra?.forEach((o) => o.destroy());
   }
 
-  sync<T extends { id: number; x: number; y: number }>(map: Map<number, View>, list: T[], make: (o: T) => View, upd?: (v: View, o: T) => void, dt = 0) {
+  sync<T extends { id: number; x: number; y: number }>(
+    map: Map<number, View>,
+    list: T[],
+    make: (o: T) => View,
+    upd?: (v: View, o: T) => void,
+    dt = 0,
+    remember = false,
+  ) {
     const seen = new Set<number>();
     for (const o of list) {
       seen.add(o.id);
@@ -245,6 +271,7 @@ export class GameScene extends Phaser.Scene {
         v = make(o);
         map.set(o.id, v);
       }
+      v.ghost = false;
       if (dt > 0) v.spd += (Math.hypot(o.x - v.x, o.y - v.y) / dt - v.spd) * Math.min(1, dt * 15);
       v.x = o.x;
       v.y = o.y;
@@ -252,6 +279,11 @@ export class GameScene extends Phaser.Scene {
     }
     for (const [id, v] of map)
       if (!seen.has(id)) {
+        // Out of sight is not gone: keep the last-known prop until its spot is seen again.
+        if (remember && v.seen && !this.client.fog.visibleAt(v.x, v.y)) {
+          v.ghost = true;
+          continue;
+        }
         this.destroyView(v);
         map.delete(id);
       }
@@ -259,12 +291,22 @@ export class GameScene extends Phaser.Scene {
 
   view(spr: Phaser.GameObjects.Image, x: number, y: number, kind: string, extra?: Phaser.GameObjects.GameObject[]): View {
     spr.setPosition(x, y);
-    return { spr, x, y, spd: 0, flash: 0, kind, extra };
+    return { spr, x, y, spd: 0, flash: 0, kind, extra, fade: 0 };
+  }
+
+  /** Opacity for a non-teammate view: in sight (with fade-in), remembered, or hidden. */
+  private fogAlpha(v: View, dt: number, remember = false) {
+    v.fade = Math.min(1, v.fade + dt * 6);
+    const a = this.fog.alphaAt(v.x, v.y);
+    if (a > 0.5) v.seen = true;
+    if (remember && v.seen) return v.ghost ? 1 : Math.max(a * v.fade, 1 - a);
+    return a * v.fade;
   }
 
   private syncWorld(view: WorldView, bullets: RenderBullet[], myPos: [number, number] | null, dt: number) {
     const myId = this.client.myId;
     const players = view.players.map((p) => (p.id === myId && myPos ? { ...p, x: myPos[0], y: myPos[1] } : p));
+    this.eyes = players;
     this.sync(
       this.players,
       players,
@@ -322,17 +364,24 @@ export class GameScene extends Phaser.Scene {
         v.spr.setScale(b.r > 2 ? 1.4 : 1);
       },
     );
-    this.sync(this.barrels, view.barrels, (b) => this.view(this.add.image(0, 0, 'barrel').setOrigin(0.5, 0.7), b.x, b.y, 'barrel'));
-    this.sync(this.items, view.items, (it) => {
-      const glow = this.add
-        .image(it.x, it.y, 'glow')
-        .setTint(it.k === 'potion' ? 0xff3355 : 0xffd23f)
-        .setScale(0.5)
-        .setAlpha(0.6)
-        .setBlendMode(Phaser.BlendModes.ADD)
-        .setDepth(5);
-      return this.view(this.add.image(0, 0, `item_${it.k}`).setDepth(6), it.x, it.y, it.k, [glow]);
-    });
+    this.sync(this.barrels, view.barrels, (b) => this.view(this.add.image(0, 0, 'barrel').setOrigin(0.5, 0.7), b.x, b.y, 'barrel'), undefined, 0, true);
+    this.sync(
+      this.items,
+      view.items,
+      (it) => {
+        const glow = this.add
+          .image(it.x, it.y, 'glow')
+          .setTint(it.k === 'potion' ? 0xff3355 : 0xffd23f)
+          .setScale(0.5)
+          .setAlpha(0.6)
+          .setBlendMode(Phaser.BlendModes.ADD)
+          .setDepth(5);
+        return this.view(this.add.image(0, 0, `item_${it.k}`).setDepth(6), it.x, it.y, it.k, [glow]);
+      },
+      undefined,
+      0,
+      true,
+    );
   }
 
   private onLatest(s: WorldView) {
@@ -366,6 +415,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   popText(x: number, y: number, text: string, color: string) {
+    if (this.fog.shadeAt(x, y) > 0.5) return;
     const t = this.add
       .text(x + (Math.random() - 0.5) * 6, y - 10, text, { fontFamily: 'monospace', fontSize: '8px', fontStyle: 'bold', color, stroke: '#000', strokeThickness: 2 })
       .setOrigin(0.5)
@@ -655,31 +705,41 @@ export class GameScene extends Phaser.Scene {
     if (view && latest) this.drawEntities(view, latest, dt, this.aim);
     this.cross.setPosition(wp.x, wp.y);
 
+    this.client.fog.see(this.eyes);
+    this.fog.update(dt);
+
     const me = this.players.get(c.myId);
-    if (me) {
-      const lx = me.x + Phaser.Math.Clamp((wp.x - me.x) * 0.28, -70, 70);
-      const ly = me.y + Phaser.Math.Clamp((wp.y - me.y) * 0.28, -50, 50);
-      if (this.camX < 0) {
-        this.camX = lx;
-        this.camY = ly;
-      }
-      const k = 1 - Math.exp(-dt * 8);
-      this.camX += (lx - this.camX) * k;
-      this.camY += (ly - this.camY) * k;
-    }
+    const selfFocus = me
+      ? { x: me.x + Phaser.Math.Clamp((wp.x - me.x) * 0.28, -70, 70), y: me.y + Phaser.Math.Clamp((wp.y - me.y) * 0.28, -50, 50) }
+      : null;
+    const bounds = { w: (this.map?.w ?? 0) * TILE, h: (this.map?.h ?? 0) * TILE };
+    this.rig.update(dt, selfFocus, (id) => this.players.get(id) ?? null, bounds);
     this.trauma = Math.max(0, this.trauma - dt * 1.6);
     this.zoomPunch *= Math.exp(-dt * 10);
     this.kickX *= Math.exp(-dt * 14);
     this.kickY *= Math.exp(-dt * 14);
     const sh = this.trauma * this.trauma * 7;
     cam.setZoom(this.baseZoom * (1 + this.zoomPunch));
-    cam.centerOn(this.camX + this.kickX + (Math.random() * 2 - 1) * sh, this.camY + this.kickY + (Math.random() * 2 - 1) * sh);
+    cam.centerOn(this.rig.x + this.kickX + (Math.random() * 2 - 1) * sh, this.rig.y + this.kickY + (Math.random() * 2 - 1) * sh);
     cam.setRotation(this.trauma * this.trauma * (Math.random() - 0.5) * 0.03);
 
     this.animateTiles(now);
     this.fx.update(dt);
     this.drawIndicators(latest, me);
+    this.updateCamTag(latest);
     this.boot.debug.update(now);
+  }
+
+  private updateCamTag(s: WorldView | null) {
+    const m = this.rig.mode;
+    const who = m.k === 'follow' ? s?.players.find((p) => p.id === m.id) : undefined;
+    const key = m.k === 'follow' ? `f${m.id}${who?.name}` : m.k;
+    if (key === this.camTagKey || !this.camTag) return;
+    this.camTagKey = key;
+    this.camTag.hidden = m.k === 'self';
+    if (m.k === 'free') this.camTag.innerHTML = '<b>FREE CAMERA</b> <kbd>C</kbd> / middle-click to return';
+    else if (m.k === 'follow' && who)
+      this.camTag.innerHTML = `<b>WATCHING <span style="color:${PLAYER_COLORS[who.c]}">${who.name.replace(/[&<>"']/g, '')}</span></b> <kbd>Tab</kbd> next · <kbd>C</kbd> back to you`;
   }
 
   drawEntities(s: WorldView, latest: WorldView, dt: number, myAim: number) {
@@ -745,18 +805,22 @@ export class GameScene extends Phaser.Scene {
       if (v.flash > 0) v.spr.setTintFill(0xffffff);
       else if (e.s === 1 && Math.floor(t * 20) % 2) v.spr.setTint(0xff6060);
       else v.spr.clearTint();
-      shadow.setPosition(v.x, v.y + 1);
-      if (e.hp < e.maxHp && e.k !== 'boss') this.bar(o, v.x, v.y - (e.k === 'brute' ? 16 : 13), 12, e.hp / e.maxHp, 0xff3355);
+      const fa = this.fogAlpha(v, dt);
+      v.spr.setAlpha(fa).setVisible(fa > 0);
+      shadow.setPosition(v.x, v.y + 1).setAlpha(fa);
+      if (e.hp < e.maxHp && e.k !== 'boss' && fa > 0) this.bar(o, v.x, v.y - (e.k === 'brute' ? 16 : 13), 12, e.hp / e.maxHp, 0xff3355, fa);
     }
     for (const v of this.bullets.values()) {
-      v.spr.setPosition(v.x, v.y - 3).setRotation(Math.atan2(v.vy ?? 0, v.vx ?? 1));
-      (v.extra![0] as Phaser.GameObjects.Image).setPosition(v.x, v.y - 3);
+      const fa = v.kind === 'eb' ? this.fogAlpha(v, dt) : 1;
+      v.spr.setPosition(v.x, v.y - 3).setRotation(Math.atan2(v.vy ?? 0, v.vx ?? 1)).setAlpha(fa);
+      (v.extra![0] as Phaser.GameObjects.Image).setPosition(v.x, v.y - 3).setAlpha(0.8 * fa);
     }
-    for (const v of this.barrels.values()) v.spr.setPosition(v.x, v.y).setDepth(10 + v.y * 0.01);
+    for (const v of this.barrels.values()) v.spr.setPosition(v.x, v.y).setDepth(10 + v.y * 0.01).setAlpha(this.fogAlpha(v, dt, true));
     for (const v of this.items.values()) {
-      const yy = v.y - 3 - Math.sin(t * 4 + v.x) * 2;
-      v.spr.setPosition(v.x, yy);
-      (v.extra![0] as Phaser.GameObjects.Image).setPosition(v.x, yy).setAlpha(0.4 + Math.sin(t * 5) * 0.2);
+      const yy = v.ghost ? v.y - 3 : v.y - 3 - Math.sin(t * 4 + v.x) * 2;
+      const fa = this.fogAlpha(v, dt, true);
+      v.spr.setPosition(v.x, yy).setAlpha(fa);
+      (v.extra![0] as Phaser.GameObjects.Image).setPosition(v.x, yy).setAlpha((0.4 + Math.sin(t * 5) * 0.2) * fa);
     }
     const dbg = this.boot.debug;
     const ss = this.client.pred.serverState;
@@ -766,9 +830,9 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  bar(o: Phaser.GameObjects.Graphics, x: number, y: number, w: number, f: number, c: number) {
-    o.fillStyle(0x000000, 0.8).fillRect(Math.round(x - w / 2) - 1, Math.round(y) - 1, w + 2, 4);
-    o.fillStyle(c, 1).fillRect(Math.round(x - w / 2), Math.round(y), Math.max(0, Math.round(w * f)), 2);
+  bar(o: Phaser.GameObjects.Graphics, x: number, y: number, w: number, f: number, c: number, alpha = 1) {
+    o.fillStyle(0x000000, 0.8 * alpha).fillRect(Math.round(x - w / 2) - 1, Math.round(y) - 1, w + 2, 4);
+    o.fillStyle(c, alpha).fillRect(Math.round(x - w / 2), Math.round(y), Math.max(0, Math.round(w * f)), 2);
   }
 
   animateTiles(now: number) {
@@ -800,17 +864,19 @@ export class GameScene extends Phaser.Scene {
     const targets: { x: number; y: number; c: number }[] = [];
     if (s && meView) {
       if (s.stairs) targets.push({ ...this.stairsPos, c: 0xffd23f });
+      if (this.rig.mode.k !== 'self') targets.push({ x: meView.x, y: meView.y, c: 0xffffff });
       for (const p of s.players) if (p.id !== this.client.myId) targets.push({ x: p.x, y: p.y, c: hex(PLAYER_COLORS[p.c]) });
-      if (!s.stairs && s.enemies.length <= 3) for (const e of s.enemies) targets.push({ x: e.x, y: e.y, c: 0xff3355 });
+      if (!s.stairs && s.enemies.length <= 3)
+        for (const e of s.enemies) if (this.client.fog.visibleAt(e.x, e.y)) targets.push({ x: e.x, y: e.y, c: 0xff3355 });
     }
     const view = this.cameras.main.worldView;
     let i = 0;
     for (const tg of targets) {
       if (view.contains(tg.x, tg.y) || !meView) continue;
-      const a = Math.atan2(tg.y - meView.y, tg.x - meView.x);
-      const m = 10 / this.baseZoom + 6;
       const cx = view.centerX;
       const cy = view.centerY;
+      const a = Math.atan2(tg.y - cy, tg.x - cx);
+      const m = 10 / this.baseZoom + 6;
       const hw = view.width / 2 - m;
       const hh = view.height / 2 - m;
       const k = Math.min(hw / Math.abs(Math.cos(a) || 1e-6), hh / Math.abs(Math.sin(a) || 1e-6));

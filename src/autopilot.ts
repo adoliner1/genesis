@@ -23,10 +23,29 @@ export class Autopilot {
   aimX = 0;
   aimY = 0;
 
+  private frontier: { x: number; y: number }[] = [];
+  private lastFrontier = 0;
+
   constructor(
     private map: () => { w: number; h: number; tiles: Uint8Array } | null,
     private choose: (i: number) => void,
+    private explored: () => Uint8Array | null = () => null,
   ) {}
+
+  /** Explored walkable tiles next to unexplored ones: where to go when nothing is in sight. */
+  private findFrontier(): { x: number; y: number }[] {
+    const m = this.map()!;
+    const ex = this.explored();
+    if (!ex || ex.length !== m.tiles.length) return [];
+    const out: { x: number; y: number }[] = [];
+    for (let i = 0; i < ex.length; i++) {
+      if (!ex[i] || !this.walk(m.tiles[i])) continue;
+      const x = i % m.w;
+      if ((x > 0 && !ex[i - 1]) || (x < m.w - 1 && !ex[i + 1]) || (i >= m.w && !ex[i - m.w]) || (i + m.w < ex.length && !ex[i + m.w]))
+        out.push({ x: x * TILE + 8, y: Math.floor(i / m.w) * TILE + 8 });
+    }
+    return out;
+  }
 
   private walk(t: number) {
     return t === T.Floor || t === T.Spikes || t === T.Stairs;
@@ -91,6 +110,12 @@ export class Autopilot {
     else if (!target && s.stairs) {
       const m = this.map()!;
       for (let i = 0; i < m.tiles.length; i++) if (m.tiles[i] === T.Stairs) goals.push({ x: (i % m.w) * TILE + 8, y: Math.floor(i / m.w) * TILE + 8 });
+    } else if (!target) {
+      if (now - this.lastFrontier > 700) {
+        this.lastFrontier = now;
+        this.frontier = this.findFrontier();
+      }
+      goals = this.frontier;
     }
 
     if (goals.length) {

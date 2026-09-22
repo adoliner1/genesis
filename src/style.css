@@ -536,6 +536,33 @@ label {
   white-space: nowrap;
 }
 
+#camtag {
+  position: absolute;
+  bottom: 34px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 12px;
+  background: rgba(13, 8, 16, 0.85);
+  border: 2px solid var(--gold);
+  color: #e8e0c8;
+  font-size: 12px;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  box-shadow: 3px 3px 0 #000;
+}
+
+#camtag[hidden] {
+  display: none;
+}
+
+#camtag kbd {
+  display: inline-block;
+  padding: 0 4px;
+  border: 1px solid var(--muted);
+  font-family: inherit;
+  font-size: 11px;
+}
+
 #conn {
   position: fixed;
   inset: 0;

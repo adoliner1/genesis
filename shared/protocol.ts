@@ -197,4 +197,6 @@ export type ServerMsg =
   | { t: 'joined'; code: string; id: number; token: string; tick: number }
   | { t: 'error'; msg: string; reason?: 'expired' | 'replaced' | 'full' | 'missing' }
   | { t: 'meta'; players: PlayerMeta[] }
+  /** Team's explored tiles (bitset, base64) so late joiners and reconnects keep the revealed map. */
+  | { t: 'fog'; ep: number; explored: string }
   | FloorMsg;

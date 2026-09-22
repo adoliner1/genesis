@@ -35,8 +35,13 @@ import {
 } from '../shared/sim/movement.ts';
 import { DEAD, BOUNCED, bulletHalfStep } from '../shared/sim/bullets.ts';
 import {
+  B,
+  E,
   ENEMY_KINDS,
+  I,
   ITEM_KINDS,
+  X,
+  dpos,
   MSG_INPUT,
   MSG_PING,
   PF,
@@ -49,6 +54,7 @@ import {
   type World,
 } from '../shared/net/snapshot.ts';
 import { generateFloor, type FloorData } from './dungeon.ts';
+import { Vision, type Viewer } from './vision.ts';
 
 const START_FLOOR = Math.min(FLOORS, Math.max(1, Number(process.env.START_FLOOR) || 1));
 const STATS: StatKind[] = ['vit', 'pow', 'rof', 'spd', 'dash', 'kick'];
@@ -192,6 +198,14 @@ const ENEMY_DEFS: Record<EnemyKind, { hp: number; r: number; mass: number; speed
   boss: { hp: 2200, r: ENEMY_R.boss, mass: 12, speed: 42, xp: 0 },
 };
 
+/** What one team is allowed to know: its own filtered snapshot history and event log. */
+interface TeamFeed {
+  worlds: Map<number, World>;
+  events: [number, GameEvent[]][];
+  /** Bullets first seen mid-flight are re-anchored where they became visible, so their origin stays hidden. */
+  anchors: Map<number, { t0: number; at: [number, number, number] }>;
+}
+
 const len = (x: number, y: number) => Math.sqrt(x * x + y * y);
 const r1 = (v: number) => Math.round(v * 10) / 10;
 const angDiff = (a: number, b: number) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
@@ -215,8 +229,8 @@ export class Room {
   winTimer = -1;
   floorMsg!: FloorMsg;
   runSeed = (Math.random() * 1e9) | 0;
-  worlds = new Map<number, World>();
-  eventLog: [number, GameEvent[]][] = [];
+  feeds = new Map<number, TeamFeed>();
+  vision!: Vision;
   bytesOut = 0;
   lagLog: number[] = [];
 
@@ -288,7 +302,13 @@ export class Room {
   private greet(p: Player) {
     this.send(p, { t: 'joined', code: this.code, id: p.id, token: p.net.token, tick: this.tick });
     this.send(p, this.floorMsg);
+    this.send(p, { t: 'fog', ep: this.ep, explored: this.vision.explored(this.teamOf(p)) });
     this.send(p, { t: 'meta', players: this.metas() });
+  }
+
+  /** Everyone is on one co-op team today; vision, snapshots and events are already split per team. */
+  teamOf(_p: Player): number {
+    return 0;
   }
 
   removePlayer(id: number) {
@@ -442,6 +462,7 @@ export class Room {
     this.ep++;
     const boss = n === FLOORS;
     this.map = generateFloor(n, this.runSeed + n * 7919, boss);
+    this.vision = new Vision(this.map);
     this.enemies = [];
     this.bullets = [];
     this.items = [];
@@ -944,13 +965,90 @@ export class Room {
       console.log(`[lag] hits ${l.length} rewind ticks min ${l[0].toFixed(1)} med ${l[l.length >> 1].toFixed(1)} max ${l[l.length - 1].toFixed(1)}`);
       this.lagLog = [];
     }
+    this.updateVision();
     const world = this.buildWorld();
-    this.worlds.set(this.tick, world);
-    this.worlds.delete(this.tick - WORLD_HISTORY);
-    if (this.events.length) this.eventLog.push([this.tick, this.events]);
-    while (this.eventLog.length && this.eventLog[0][0] <= this.tick - WORLD_HISTORY) this.eventLog.shift();
+    const teams = new Set([...this.players.values()].map((p) => this.teamOf(p)));
+    for (const team of teams) {
+      let feed = this.feeds.get(team);
+      if (!feed) this.feeds.set(team, (feed = { worlds: new Map(), events: [], anchors: new Map() }));
+      feed.worlds.set(this.tick, this.teamWorld(world, team, feed));
+      feed.worlds.delete(this.tick - WORLD_HISTORY);
+      const evs = this.events.filter((e) => this.eventVisible(team, e));
+      if (evs.length) feed.events.push([this.tick, evs]);
+      while (feed.events.length && feed.events[0][0] <= this.tick - WORLD_HISTORY) feed.events.shift();
+    }
+    for (const team of this.feeds.keys()) if (!teams.has(team)) this.feeds.delete(team);
     this.events = [];
     this.syncMeta();
+  }
+
+  // ---------- fog of war ----------
+  private updateVision() {
+    const viewers: Viewer[] = [];
+    for (const p of this.players.values()) viewers.push({ id: p.id, team: this.teamOf(p), x: p.x, y: p.y, eyes: !p.net.offline });
+    this.vision.update(this.tick, viewers);
+  }
+
+  /** Can player `pid` see the point (or a body of radius `r`) right now, through their team's shared vision? */
+  canSee(pid: number, x: number, y: number, r = 0): boolean {
+    return this.vision.canSee(pid, x, y, r);
+  }
+
+  /** Drop a sight-blocking cloud (e.g. a smoke bomb) for `ticks` ticks. Returns an id for removeBlocker. */
+  addVisionBlocker(x: number, y: number, r: number, ticks: number): number {
+    return this.vision.addBlocker(x, y, r, this.tick + ticks);
+  }
+
+  private eventVisible(team: number, e: GameEvent): boolean {
+    switch (e.e) {
+      case 'shot':
+      case 'kick':
+      case 'dash':
+      case 'pickup':
+        return true;
+      case 'hit':
+      case 'fall':
+        if (e.who === 'player') return true;
+    }
+    return 'x' in e ? this.vision.streamed(team, e.x, e.y, 4) : true;
+  }
+
+  /** The snapshot a team is allowed to receive: teammates always, everything else only inside its streamed vision. */
+  private teamWorld(world: World, team: number, feed: TeamFeed): World {
+    const v = this.vision;
+    const [players, enemies, bullets, barrels, items] = world.tables;
+    const seen = (row: number[], ix: number, iy: number, r: number) => v.streamed(team, dpos(row[ix]), dpos(row[iy]), r);
+    const pl: Table = new Map();
+    for (const [id, row] of players) {
+      const p = this.players.get(id);
+      if ((p && this.teamOf(p) === team) || seen(row, 0, 1, PLAYER_R)) pl.set(id, row);
+    }
+    const en: Table = new Map();
+    for (const [id, row] of enemies) if (seen(row, E.x, E.y, ENEMY_DEFS[ENEMY_KINDS[row[E.k]]].r)) en.set(id, row);
+    const bu: Table = new Map();
+    const anchors: TeamFeed['anchors'] = new Map();
+    for (const b of this.bullets) {
+      const row = bullets.get(b.id);
+      if (!row) continue;
+      const owner = b.enemy ? undefined : this.players.get(b.pid);
+      if (owner && this.teamOf(owner) === team) {
+        bu.set(b.id, row);
+        continue;
+      }
+      if (!v.streamed(team, b.x, b.y, b.r)) continue;
+      let a = feed.anchors.get(b.id);
+      if (!a || a.t0 !== b.t0) a = { t0: b.t0, at: v.streamed(team, b.x0, b.y0) ? [b.t0, qpos(b.x0), qpos(b.y0)] : [this.tick, qpos(b.x), qpos(b.y)] };
+      anchors.set(b.id, a);
+      const r = row.slice();
+      [r[B.t0], r[B.x], r[B.y]] = a.at;
+      bu.set(b.id, r);
+    }
+    feed.anchors = anchors;
+    const ba: Table = new Map();
+    for (const [id, row] of barrels) if (seen(row, X.x, X.y, 6)) ba.set(id, row);
+    const it: Table = new Map();
+    for (const [id, row] of items) if (seen(row, I.x, I.y, 4)) it.set(id, row);
+    return { ...world, tables: [pl, en, bu, ba, it] };
   }
 
   private buildWorld(): World {
@@ -1015,13 +1113,14 @@ export class Room {
 
   /** Per-client delta snapshot against the newest state that client has acknowledged. */
   sendSnapshots() {
-    const world = this.worlds.get(this.tick);
-    if (!world) return;
     for (const p of this.players.values()) {
       if (!p.net.ws || p.net.ws.readyState !== 1) continue;
-      const base = p.net.snapAck ? this.worlds.get(p.net.snapAck) ?? null : null;
+      const feed = this.feeds.get(this.teamOf(p));
+      const world = feed?.worlds.get(this.tick);
+      if (!feed || !world) continue;
+      const base = p.net.snapAck ? feed.worlds.get(p.net.snapAck) ?? null : null;
       const since = base ? base.tick : this.tick - 1;
-      const events = this.eventLog.filter(([t]) => t > since);
+      const events = feed.events.filter(([t]) => t > since);
       const bytes = encodeSnapshot(world, base, { ack: p.net.ack, buf: p.net.buf, starved: p.net.starved & 0xffff, self: pickMove(p), events });
       this.sendBin(p, bytes);
     }
