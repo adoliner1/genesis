@@ -61,6 +61,7 @@ npm start            # serves dist/ + WebSocket on PORT (default 47291)
 - **Progression:**
   - XP is shared, and each level-up offers 3 of 6 perks.
   - Items are found on the floor. Some are one-off pickups, like the Blood Tonic heal. Others are passives: Twin Barrel, Rubber Rounds, Heavy Slugs, Vampire Fang, Quickstep Boots and Bone Piercer.
+- **Late joiners** get catch-up levels and two random passive items for each floor already cleared.
 - **Death:**
   - A downed player can be revived by a teammate standing next to them for 2 seconds.
   - If the whole party goes down, the run is over. **Descend again** restarts from floor 1.
