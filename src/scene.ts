@@ -3,31 +3,28 @@ import {
   ITEM_INFO,
   PLAYER_COLORS,
   T,
-  TICK_RATE,
   TILE,
   spikeState,
   type FloorMsg,
   type GameEvent,
-  type ServerMsg,
-  type SnapMsg,
+  type PlayerSnap,
+  type WorldView,
 } from '../shared/protocol';
+import { parseTiles } from '../shared/sim/map';
+import type { StepResult } from '../shared/sim/movement';
 import { makeTextures, renderMap } from './sprites';
 import { Fx } from './fx';
 import { sfx } from './audio';
-import { Autopilot } from './autopilot';
-import type { Net } from './net';
+import { Autopilot, type BotOutput } from './autopilot';
+import type { NetClient, RawInput, RenderBullet } from './net/client';
 import type { Hud } from './hud';
-
-const TICK_MS = 1000 / TICK_RATE;
+import type { DebugOverlay } from './debug';
 
 interface View {
   spr: Phaser.GameObjects.Image;
   x: number;
   y: number;
-  fx: number;
-  fy: number;
-  tx: number;
-  ty: number;
+  spd: number;
   flash: number;
   kind: string;
   extra?: Phaser.GameObjects.GameObject[];
@@ -36,10 +33,9 @@ interface View {
 }
 
 export interface Boot {
-  net: Net;
-  myId: number;
+  client: NetClient;
   hud: Hud;
-  floor: () => FloorMsg | null;
+  debug: DebugOverlay;
 }
 
 const hex = (s: string) => parseInt(s.slice(1), 16);
@@ -57,8 +53,6 @@ export class GameScene extends Phaser.Scene {
   grate: Phaser.GameObjects.Image | null = null;
   stairsGlow: Phaser.GameObjects.Image | null = null;
   stairsPos = { x: 0, y: 0 };
-  snap: SnapMsg | null = null;
-  snapTime = 0;
   players = new Map<number, View>();
   enemies = new Map<number, View>();
   bullets = new Map<number, View>();
@@ -78,13 +72,13 @@ export class GameScene extends Phaser.Scene {
   hitstopUntil = 0;
   wantDash = false;
   wantKick = false;
-  lastSend = 0;
+  aim = 0;
   lavaFrame = 0;
   floorCount = 0;
-  lastPhase = 'play';
   stairsWasOpen = false;
-  unsub: () => void = () => {};
+  lastLatest: WorldView | null = null;
   bot: Autopilot | null = null;
+  auto: BotOutput | null = null;
 
   constructor() {
     super('game');
@@ -92,6 +86,10 @@ export class GameScene extends Phaser.Scene {
 
   init(data: Boot) {
     this.boot = data;
+  }
+
+  get client() {
+    return this.boot.client;
   }
 
   create() {
@@ -109,7 +107,7 @@ export class GameScene extends Phaser.Scene {
       if (p.rightButtonDown()) this.wantKick = true;
     });
     this.boot.hud.onChoose = (i) => this.choose(i);
-    this.boot.hud.onRestart = () => this.boot.net.send({ t: 'restart' });
+    this.boot.hud.onRestart = () => this.client.net.sendJson({ t: 'restart' });
 
     if (new URLSearchParams(location.search).has('bot')) this.bot = new Autopilot(() => this.map, (i) => this.choose(i));
     this.decals = this.add.renderTexture(0, 0, 16, 16).setOrigin(0).setDepth(2);
@@ -123,12 +121,17 @@ export class GameScene extends Phaser.Scene {
       const t = m.tiles[ty * m.w + tx];
       return t === T.Wall || t === T.Pit || t === T.Lava;
     };
-    this.unsub = this.boot.net.on((m) => this.onMsg(m));
-    const f = this.boot.floor();
-    if (f) this.loadFloor(f);
+    this.client.hooks = {
+      input: () => this.sampleInput(),
+      predicted: (res, x, y, aim) => this.onPredicted(res, x, y, aim),
+      impact: (x, y, what, id) => this.onImpact(x, y, what, id),
+      event: (e) => this.onEvent(e),
+      floor: (f) => this.loadFloor(f),
+    };
+    if (this.client.floor) this.loadFloor(this.client.floor);
     this.scale.on('resize', () => this.fitZoom());
     this.fitZoom();
-    this.events.once('shutdown', () => this.unsub());
+    this.events.once('shutdown', () => (this.client.hooks = null));
   }
 
   fitZoom() {
@@ -136,16 +139,34 @@ export class GameScene extends Phaser.Scene {
   }
 
   choose(i: number) {
-    if (this.boot.hud.choices) this.boot.net.send({ t: 'choose', idx: i });
+    if (this.boot.hud.choices) this.client.net.sendJson({ t: 'choose', idx: i });
   }
 
-  onMsg(m: ServerMsg) {
-    if (m.t === 'floor') this.loadFloor(m);
-    else if (m.t === 'snap') this.onSnap(m);
+  /** Called by the net client once per fixed tick. */
+  sampleInput(): RawInput {
+    const dash = this.wantDash;
+    const kick = this.wantKick;
+    this.wantDash = this.wantKick = false;
+    if (this.auto) {
+      const a = { ...this.auto, dash: this.auto.dash || dash };
+      this.auto.dash = this.auto.kick = false;
+      return a;
+    }
+    const k = this.keys;
+    const pointer = this.input.activePointer;
+    const me = this.client.pred.state;
+    return {
+      mx: (k.D.isDown || k.RIGHT.isDown ? 1 : 0) - (k.A.isDown || k.LEFT.isDown ? 1 : 0),
+      my: (k.S.isDown || k.DOWN.isDown ? 1 : 0) - (k.W.isDown || k.UP.isDown ? 1 : 0),
+      aim: this.aim,
+      shoot: pointer.leftButtonDown() && pointer.isDown && !!me && !me.down,
+      dash,
+      kick,
+    };
   }
 
   loadFloor(f: FloorMsg) {
-    const tiles = Uint8Array.from(f.tiles, (c) => c.charCodeAt(0) - 48);
+    const tiles = parseTiles(f.tiles);
     this.map = { w: f.w, h: f.h, tiles, boss: f.boss };
     for (const m of [this.enemies, this.bullets, this.barrels, this.items]) {
       for (const v of m.values()) this.destroyView(v);
@@ -215,13 +236,7 @@ export class GameScene extends Phaser.Scene {
     v.extra?.forEach((o) => o.destroy());
   }
 
-  sync<T extends { id: number; x: number; y: number }>(
-    map: Map<number, View>,
-    list: T[],
-    make: (o: T) => View,
-    upd?: (v: View, o: T) => void,
-    remove?: (v: View) => void,
-  ) {
+  sync<T extends { id: number; x: number; y: number }>(map: Map<number, View>, list: T[], make: (o: T) => View, upd?: (v: View, o: T) => void, dt = 0) {
     const seen = new Set<number>();
     for (const o of list) {
       seen.add(o.id);
@@ -230,15 +245,13 @@ export class GameScene extends Phaser.Scene {
         v = make(o);
         map.set(o.id, v);
       }
-      v.fx = v.x;
-      v.fy = v.y;
-      v.tx = o.x;
-      v.ty = o.y;
+      if (dt > 0) v.spd += (Math.hypot(o.x - v.x, o.y - v.y) / dt - v.spd) * Math.min(1, dt * 15);
+      v.x = o.x;
+      v.y = o.y;
       upd?.(v, o);
     }
     for (const [id, v] of map)
       if (!seen.has(id)) {
-        remove?.(v);
         this.destroyView(v);
         map.delete(id);
       }
@@ -246,34 +259,47 @@ export class GameScene extends Phaser.Scene {
 
   view(spr: Phaser.GameObjects.Image, x: number, y: number, kind: string, extra?: Phaser.GameObjects.GameObject[]): View {
     spr.setPosition(x, y);
-    return { spr, x, y, fx: x, fy: y, tx: x, ty: y, flash: 0, kind, extra };
+    return { spr, x, y, spd: 0, flash: 0, kind, extra };
   }
 
-  onSnap(s: SnapMsg) {
-    if (!this.map) return;
-    for (const e of s.events) this.onEvent(e, s);
-    this.snap = s;
-    this.snapTime = performance.now();
-
-    this.sync(this.players, s.players, (p) => {
-      const body = this.add.image(0, 0, `player${p.c}`).setOrigin(0.5, 0.8);
-      const gun = this.add.image(0, 0, 'gun').setOrigin(0.15, 0.5);
-      const name = this.add
-        .text(0, 0, p.name, { fontFamily: 'monospace', fontSize: '5px', color: PLAYER_COLORS[p.c], stroke: '#000', strokeThickness: 2 })
-        .setOrigin(0.5, 1)
-        .setResolution(4)
-        .setDepth(955);
-      const shadow = this.add.ellipse(0, 0, 10, 4, 0x000000, 0.35).setDepth(4);
-      return this.view(body, p.x, p.y, 'player', [gun, name, shadow]);
-    });
-    this.sync(this.enemies, s.enemies, (e) => {
-      const spr = this.add.image(0, 0, e.k).setOrigin(0.5, e.k === 'boss' ? 0.75 : 0.75);
-      const shadow = this.add.ellipse(0, 0, e.k === 'boss' ? 26 : e.k === 'brute' ? 14 : 10, e.k === 'boss' ? 8 : 4, 0x000000, 0.35).setDepth(4);
-      return this.view(spr, e.x, e.y, e.k, [shadow]);
-    });
+  private syncWorld(view: WorldView, bullets: RenderBullet[], myPos: [number, number] | null, dt: number) {
+    const myId = this.client.myId;
+    const players = view.players.map((p) => (p.id === myId && myPos ? { ...p, x: myPos[0], y: myPos[1] } : p));
+    this.sync(
+      this.players,
+      players,
+      (p) => {
+        const body = this.add.image(0, 0, `player${p.c}`).setOrigin(0.5, 0.8);
+        const gun = this.add.image(0, 0, 'gun').setOrigin(0.15, 0.5);
+        const name = this.add
+          .text(0, 0, p.name, { fontFamily: 'monospace', fontSize: '5px', color: PLAYER_COLORS[p.c], stroke: '#000', strokeThickness: 2 })
+          .setOrigin(0.5, 1)
+          .setResolution(4)
+          .setDepth(955);
+        const shadow = this.add.ellipse(0, 0, 10, 4, 0x000000, 0.35).setDepth(4);
+        return this.view(body, p.x, p.y, 'player', [gun, name, shadow]);
+      },
+      (v, p) => {
+        const name = v.extra![1] as Phaser.GameObjects.Text;
+        const label = p.off ? `${p.name} (offline)` : p.name;
+        if (name.text !== label) name.setText(label);
+      },
+      dt,
+    );
+    this.sync(
+      this.enemies,
+      view.enemies,
+      (e) => {
+        const spr = this.add.image(0, 0, e.k).setOrigin(0.5, 0.75);
+        const shadow = this.add.ellipse(0, 0, e.k === 'boss' ? 26 : e.k === 'brute' ? 14 : 10, e.k === 'boss' ? 8 : 4, 0x000000, 0.35).setDepth(4);
+        return this.view(spr, e.x, e.y, e.k, [shadow]);
+      },
+      undefined,
+      dt,
+    );
     this.sync(
       this.bullets,
-      s.bullets,
+      bullets,
       (b) => {
         const spr = this.add.image(0, 0, b.e ? 'ebullet' : 'bullet').setDepth(800);
         const glow = this.add
@@ -293,13 +319,11 @@ export class GameScene extends Phaser.Scene {
         }
         v.vx = b.vx;
         v.vy = b.vy;
-        v.fx = v.tx;
-        v.fy = v.ty;
         v.spr.setScale(b.r > 2 ? 1.4 : 1);
       },
     );
-    this.sync(this.barrels, s.barrels, (b) => this.view(this.add.image(0, 0, 'barrel').setOrigin(0.5, 0.7), b.x, b.y, 'barrel'));
-    this.sync(this.items, s.items, (it) => {
+    this.sync(this.barrels, view.barrels, (b) => this.view(this.add.image(0, 0, 'barrel').setOrigin(0.5, 0.7), b.x, b.y, 'barrel'));
+    this.sync(this.items, view.items, (it) => {
       const glow = this.add
         .image(it.x, it.y, 'glow')
         .setTint(it.k === 'potion' ? 0xff3355 : 0xffd23f)
@@ -309,7 +333,9 @@ export class GameScene extends Phaser.Scene {
         .setDepth(5);
       return this.view(this.add.image(0, 0, `item_${it.k}`).setDepth(6), it.x, it.y, it.k, [glow]);
     });
+  }
 
+  private onLatest(s: WorldView) {
     if (s.stairs && !this.stairsWasOpen) {
       this.stairsWasOpen = true;
       this.grate?.setVisible(false);
@@ -317,8 +343,7 @@ export class GameScene extends Phaser.Scene {
       this.fx.sparks(this.stairsPos.x, this.stairsPos.y, 30, 0xffd23f, 160);
       sfx.stairs();
     }
-    this.boot.hud.update(s, this.boot.myId);
-    this.lastPhase = s.phase;
+    this.boot.hud.update(s, this.client.myId);
   }
 
   nearest(map: Map<number, View>, x: number, y: number, r: number) {
@@ -335,7 +360,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   shakeAt(x: number, y: number, amount: number) {
-    const me = this.players.get(this.boot.myId);
+    const me = this.players.get(this.client.myId);
     const d = me ? Math.hypot(me.x - x, me.y - y) : 0;
     this.trauma = Math.min(1, this.trauma + amount * Math.max(0.15, 1 - d / 260));
   }
@@ -349,45 +374,111 @@ export class GameScene extends Phaser.Scene {
     this.tweens.add({ targets: t, y: t.y - 14, alpha: 0, duration: 650, ease: 'Cubic.easeOut', onComplete: () => t.destroy() });
   }
 
-  onEvent(e: GameEvent, s: SnapMsg) {
-    const me = this.boot.myId;
-    switch (e.e) {
-      case 'shot': {
-        const local = e.p === me;
-        const mx = e.x + Math.cos(e.a) * 10;
-        const my = e.y - 3 + Math.sin(e.a) * 10;
-        const fl = this.add.image(mx, my, 'flash').setDepth(850).setRotation(e.a).setBlendMode(Phaser.BlendModes.ADD);
-        const gl = this.add.image(mx, my, 'glow').setDepth(849).setTint(0xffb13b).setScale(0.7).setBlendMode(Phaser.BlendModes.ADD);
-        this.time.delayedCall(50, () => {
-          fl.destroy();
-          gl.destroy();
+  // ---------- instant local feedback ----------
+  private onPredicted(res: StepResult, x: number, y: number, aim: number) {
+    if (res.dashed) this.fxDash(x, y, this.client.myId);
+    if (res.fired) this.fxShot(x, y, aim, true);
+    if (res.kicked) this.fxKick(x + Math.cos(aim) * 8, y + Math.sin(aim) * 8, aim, true);
+  }
+
+  private onImpact(x: number, y: number, what: 'wall' | 'enemy' | 'barrel', id: number) {
+    if (what === 'enemy') {
+      const v = this.enemies.get(id);
+      if (v) v.flash = 0.06;
+      this.fx.sparks(x, y, 4, 0xffffff, 70);
+      sfx.hit();
+    } else {
+      this.fx.sparks(x, y, 5, 0xffe066, 80);
+      sfx.spark();
+    }
+  }
+
+  private fxShot(x: number, y: number, a: number, local: boolean) {
+    const mx = x + Math.cos(a) * 10;
+    const my = y - 3 + Math.sin(a) * 10;
+    const fl = this.add.image(mx, my, 'flash').setDepth(850).setRotation(a).setBlendMode(Phaser.BlendModes.ADD);
+    const gl = this.add.image(mx, my, 'glow').setDepth(849).setTint(0xffb13b).setScale(0.7).setBlendMode(Phaser.BlendModes.ADD);
+    this.time.delayedCall(50, () => {
+      fl.destroy();
+      gl.destroy();
+    });
+    this.fx.casing(x, y, a);
+    sfx.shot(local);
+    if (local) {
+      this.trauma = Math.min(1, this.trauma + 0.08);
+      this.kickX -= Math.cos(a) * 2.5;
+      this.kickY -= Math.sin(a) * 2.5;
+    }
+  }
+
+  private fxKick(x: number, y: number, a: number, local: boolean) {
+    const g = this.add.graphics().setDepth(870);
+    const ax = x - Math.cos(a) * 8;
+    const ay = y - 3 - Math.sin(a) * 8;
+    g.lineStyle(4, 0xffffff, 1);
+    g.beginPath();
+    g.arc(ax, ay, 18, a - 1, a + 1);
+    g.strokePath();
+    g.lineStyle(2, 0xffd23f, 0.8);
+    g.beginPath();
+    g.arc(ax, ay, 24, a - 0.8, a + 0.8);
+    g.strokePath();
+    this.tweens.add({ targets: g, alpha: 0, scale: 1.08, duration: 180, onComplete: () => g.destroy() });
+    for (let i = 0; i < 10; i++) {
+      const aa = a + (Math.random() - 0.5) * 1.6;
+      this.fx.sparks(x + Math.cos(aa) * 14, y - 3 + Math.sin(aa) * 14, 1, 0xffffff, 90);
+    }
+    this.fx.smoke(x + Math.cos(a) * 12, y + Math.sin(a) * 12, 3, 8, 0x8a8090);
+    if (local) {
+      this.kickX += Math.cos(a) * 3;
+      this.kickY += Math.sin(a) * 3;
+      this.trauma = Math.min(1, this.trauma + 0.12);
+    }
+    sfx.kick();
+  }
+
+  private fxDash(x: number, y: number, pid: number) {
+    const v = this.players.get(pid);
+    if (v) {
+      const pl = this.client.latest?.players.find((p) => p.id === pid);
+      const tint = hex(PLAYER_COLORS[pl?.c ?? 0]);
+      for (let i = 0; i < 4; i++)
+        this.time.delayedCall(i * 30, () => {
+          const g = this.add.image(v.x, v.y, v.spr.texture.key).setOrigin(0.5, 0.8).setAlpha(0.5).setTintFill(tint).setDepth(9);
+          this.tweens.add({ targets: g, alpha: 0, duration: 220, onComplete: () => g.destroy() });
         });
-        this.fx.casing(e.x, e.y, e.a);
-        sfx.shot(local);
-        if (local) {
-          this.trauma = Math.min(1, this.trauma + 0.08);
-          this.kickX -= Math.cos(e.a) * 2.5;
-          this.kickY -= Math.sin(e.a) * 2.5;
-        }
+    }
+    this.fx.smoke(x, y + 2, 4, 6, 0x6a6070);
+    sfx.dash();
+  }
+
+  onEvent(e: GameEvent) {
+    const me = this.client.myId;
+    switch (e.e) {
+      case 'shot':
+        this.fxShot(e.x, e.y, e.a, false);
         break;
-      }
       case 'eshot':
         sfx.eshot();
         break;
       case 'hit': {
         if (e.who === 'enemy') {
           const v = this.enemies.get(e.id);
+          const x = v?.x ?? e.x;
+          const y = v?.y ?? e.y;
           if (v) v.flash = 0.07;
           const kind = v?.kind ?? 'grunt';
-          this.fx.blood(e.x, e.y, e.a, 7, 0.8, this.fx.palette(kind));
-          this.popText(e.x, e.y - (kind === 'boss' ? 16 : 4), String(e.dmg), '#ffffff');
-          sfx.hit();
-          this.shakeAt(e.x, e.y, 0.06);
+          this.fx.blood(x, y, e.a, 7, 0.8, this.fx.palette(kind));
+          this.popText(x, y - (kind === 'boss' ? 16 : 4), String(e.dmg), '#ffffff');
+          if (e.by !== me) sfx.hit();
+          this.shakeAt(x, y, 0.06);
         } else {
           const v = this.players.get(e.id);
+          const x = v?.x ?? e.x;
+          const y = v?.y ?? e.y;
           if (v) v.flash = 0.12;
-          this.fx.blood(e.x, e.y, e.a, 12, 1);
-          this.popText(e.x, e.y - 8, String(e.dmg), '#ff5a6e');
+          this.fx.blood(x, y, e.a, 12, 1);
+          this.popText(x, y - 8, String(e.dmg), '#ff5a6e');
           if (e.id === me) {
             this.trauma = Math.min(1, this.trauma + 0.45);
             this.zoomPunch += 0.04;
@@ -399,22 +490,28 @@ export class GameScene extends Phaser.Scene {
         break;
       }
       case 'die': {
+        const v = this.enemies.get(e.id);
+        const x = v?.x ?? e.x;
+        const y = v?.y ?? e.y;
         const pal = this.fx.palette(e.k);
-        this.fx.blood(e.x, e.y, e.a, e.k === 'boss' ? 120 : 34, e.k === 'boss' ? 2 : 1.4, pal);
-        this.fx.blood(e.x, e.y, e.a + Math.PI, 8, 0.6, pal);
-        this.fx.pool(e.x + Math.cos(e.a) * 4, e.y + Math.sin(e.a) * 4, e.k === 'boss' ? 22 : e.k === 'brute' ? 11 : 8, pal);
-        this.fx.corpse(e.k, e.x + Math.cos(e.a) * 3, e.y + Math.sin(e.a) * 3, e.a + Math.PI / 2 + (Math.random() - 0.5));
-        if (e.k === 'archer') this.fx.sparks(e.x, e.y, 10, 0xe8e0c8, 90);
-        this.shakeAt(e.x, e.y, e.k === 'boss' ? 1 : 0.28);
+        this.fx.blood(x, y, e.a, e.k === 'boss' ? 120 : 34, e.k === 'boss' ? 2 : 1.4, pal);
+        this.fx.blood(x, y, e.a + Math.PI, 8, 0.6, pal);
+        this.fx.pool(x + Math.cos(e.a) * 4, y + Math.sin(e.a) * 4, e.k === 'boss' ? 22 : e.k === 'brute' ? 11 : 8, pal);
+        this.fx.corpse(e.k, x + Math.cos(e.a) * 3, y + Math.sin(e.a) * 3, e.a + Math.PI / 2 + (Math.random() - 0.5));
+        if (e.k === 'archer') this.fx.sparks(x, y, 10, 0xe8e0c8, 90);
+        this.shakeAt(x, y, e.k === 'boss' ? 1 : 0.28);
         this.zoomPunch += e.k === 'boss' ? 0.12 : 0.02;
         this.hitstopUntil = performance.now() + (e.k === 'boss' ? 400 : 45);
         sfx.die();
+        if (v) {
+          this.destroyView(v);
+          this.enemies.delete(e.id);
+        }
+        this.client.deadIds.add(e.id);
         if (e.k === 'boss') {
           for (let i = 0; i < 6; i++)
             this.time.delayedCall(i * 140, () => {
-              const x = e.x + (Math.random() - 0.5) * 40;
-              const y = e.y + (Math.random() - 0.5) * 40;
-              this.fx.explosion(x, y, 30);
+              this.fx.explosion(x + (Math.random() - 0.5) * 40, y + (Math.random() - 0.5) * 40, 30);
               sfx.boom();
             });
           this.boot.hud.flash(0.5);
@@ -466,47 +563,12 @@ export class GameScene extends Phaser.Scene {
         if (e.p === me) sfx.level();
         break;
       }
-      case 'kick': {
-        const g = this.add.graphics().setDepth(870);
-        const ax = e.x - Math.cos(e.a) * 8;
-        const ay = e.y - 3 - Math.sin(e.a) * 8;
-        g.lineStyle(4, 0xffffff, 1);
-        g.beginPath();
-        g.arc(ax, ay, 18, e.a - 1, e.a + 1);
-        g.strokePath();
-        g.lineStyle(2, 0xffd23f, 0.8);
-        g.beginPath();
-        g.arc(ax, ay, 24, e.a - 0.8, e.a + 0.8);
-        g.strokePath();
-        this.tweens.add({ targets: g, alpha: 0, scale: 1.08, duration: 180, onComplete: () => g.destroy() });
-        for (let i = 0; i < 10; i++) {
-          const a = e.a + (Math.random() - 0.5) * 1.6;
-          this.fx.sparks(e.x + Math.cos(a) * 14, e.y - 3 + Math.sin(a) * 14, 1, 0xffffff, 90);
-        }
-        this.fx.smoke(e.x + Math.cos(e.a) * 12, e.y + Math.sin(e.a) * 12, 3, 8, 0x8a8090);
-        if (e.p === me) {
-          this.kickX += Math.cos(e.a) * 3;
-          this.kickY += Math.sin(e.a) * 3;
-        }
-        sfx.kick();
-        if (e.p === me) this.trauma = Math.min(1, this.trauma + 0.12);
+      case 'kick':
+        this.fxKick(e.x, e.y, e.a, false);
         break;
-      }
-      case 'dash': {
-        const v = this.players.get(e.p);
-        if (v) {
-          for (let i = 0; i < 4; i++)
-            this.time.delayedCall(i * 30, () => {
-              const g = this.add.image(v.x, v.y, v.spr.texture.key).setOrigin(0.5, 0.8).setAlpha(0.5).setTintFill(hex(PLAYER_COLORS[0])).setDepth(9);
-              const pl = s.players.find((p) => p.id === e.p);
-              if (pl) g.setTintFill(hex(PLAYER_COLORS[pl.c]));
-              this.tweens.add({ targets: g, alpha: 0, duration: 220, onComplete: () => g.destroy() });
-            });
-        }
-        this.fx.smoke(e.x, e.y + 2, 4, 6, 0x6a6070);
-        sfx.dash();
+      case 'dash':
+        this.fxDash(e.x, e.y, e.p);
         break;
-      }
       case 'burn':
         this.fx.embers(e.x, e.y, 6);
         sfx.burn();
@@ -561,42 +623,42 @@ export class GameScene extends Phaser.Scene {
   update(_t: number, dtMs: number) {
     const dt = Math.min(0.05, dtMs / 1000);
     const now = performance.now();
-    const s = this.snap;
+    const c = this.client;
     const cam = this.cameras.main;
     const frozen = now < this.hitstopUntil;
-    const alpha = Math.min(1, (now - this.snapTime) / TICK_MS);
-    const since = Math.min(TICK_MS * 1.5, now - this.snapTime) / 1000;
-
-    if (!frozen) {
-      for (const m of [this.players, this.enemies, this.barrels, this.items])
-        for (const v of m.values()) {
-          v.x = v.fx + (v.tx - v.fx) * alpha;
-          v.y = v.fy + (v.ty - v.fy) * alpha;
-        }
-      for (const v of this.bullets.values()) {
-        v.x = v.tx + (v.vx ?? 0) * since;
-        v.y = v.ty + (v.vy ?? 0) * since;
-      }
-    }
 
     const pointer = this.input.activePointer;
     const wp = cam.getWorldPoint(pointer.x, pointer.y);
-    const meSnap = s?.players.find((p) => p.id === this.boot.myId);
-    const meView = this.players.get(this.boot.myId);
-    let aim = 0;
-    const auto = this.bot && s ? this.bot.step(s, this.boot.myId, now) : null;
-    if (auto && this.bot) {
-      aim = auto.aim;
+    const meView = this.players.get(c.myId);
+    if (this.auto && this.bot) {
+      this.aim = this.auto.aim;
       wp.x = this.bot.aimX;
       wp.y = this.bot.aimY;
-    } else if (meView) aim = Math.atan2(wp.y - (meView.y - 3), wp.x - meView.x);
+    } else if (meView) this.aim = Math.atan2(wp.y - (meView.y - 3), wp.x - meView.x);
 
-    if (s) this.drawEntities(s, dt, aim);
+    c.update(now);
+    const latest = c.latest;
+    if (latest && latest !== this.lastLatest) {
+      this.lastLatest = latest;
+      this.onLatest(latest);
+    }
+    const view = c.sample();
+    const myPos = c.myRenderPos();
+    const bullets = c.renderBullets(now);
+    if (view && !frozen) this.syncWorld(view, bullets, myPos, dt);
+    if (this.bot && latest && myPos) {
+      const meSnap = latest.players.find((p) => p.id === c.myId);
+      const players = latest.players.map((p) => (p.id === c.myId ? { ...p, x: myPos[0], y: myPos[1] } : p));
+      this.auto = meSnap ? this.bot.step({ ...latest, players, bullets }, c.myId, now) : null;
+    }
+
+    if (view && latest) this.drawEntities(view, latest, dt, this.aim);
     this.cross.setPosition(wp.x, wp.y);
 
-    if (meView) {
-      const lx = meView.x + Phaser.Math.Clamp((wp.x - meView.x) * 0.28, -70, 70);
-      const ly = meView.y + Phaser.Math.Clamp((wp.y - meView.y) * 0.28, -50, 50);
+    const me = this.players.get(c.myId);
+    if (me) {
+      const lx = me.x + Phaser.Math.Clamp((wp.x - me.x) * 0.28, -70, 70);
+      const ly = me.y + Phaser.Math.Clamp((wp.y - me.y) * 0.28, -50, 50);
       if (this.camX < 0) {
         this.camX = lx;
         this.camY = ly;
@@ -614,56 +676,45 @@ export class GameScene extends Phaser.Scene {
     cam.centerOn(this.camX + this.kickX + (Math.random() * 2 - 1) * sh, this.camY + this.kickY + (Math.random() * 2 - 1) * sh);
     cam.setRotation(this.trauma * this.trauma * (Math.random() - 0.5) * 0.03);
 
-    this.animateTiles(s, now);
+    this.animateTiles(now);
     this.fx.update(dt);
-    this.drawIndicators(s, meView);
-
-    const k = this.keys;
-    const mx = (k.D.isDown || k.RIGHT.isDown ? 1 : 0) - (k.A.isDown || k.LEFT.isDown ? 1 : 0);
-    const my = (k.S.isDown || k.DOWN.isDown ? 1 : 0) - (k.W.isDown || k.UP.isDown ? 1 : 0);
-    if (now - this.lastSend > 30 || this.wantDash || this.wantKick) {
-      this.lastSend = now;
-      if (auto) this.boot.net.send({ t: 'input', ...auto });
-      else this.boot.net.send({
-        t: 'input',
-        mx,
-        my,
-        aim,
-        shoot: pointer.leftButtonDown() && pointer.isDown && !!meSnap && !meSnap.down,
-        dash: this.wantDash,
-        kick: this.wantKick,
-      });
-      this.wantDash = this.wantKick = false;
-    }
+    this.drawIndicators(latest, me);
+    this.boot.debug.update(now);
   }
 
-  drawEntities(s: SnapMsg, dt: number, myAim: number) {
+  drawEntities(s: WorldView, latest: WorldView, dt: number, myAim: number) {
     const o = this.overlay;
     o.clear();
     const t = performance.now() / 1000;
-    for (const p of s.players) {
-      const v = this.players.get(p.id);
+    const myId = this.client.myId;
+    const pred = this.client.pred.state;
+    for (const sp of s.players) {
+      const v = this.players.get(sp.id);
       if (!v) continue;
+      const mine = sp.id === myId;
+      const p: PlayerSnap = mine ? latest.players.find((q) => q.id === myId) ?? sp : sp;
       const [gun, name, shadow] = v.extra as [Phaser.GameObjects.Image, Phaser.GameObjects.Text, Phaser.GameObjects.Ellipse];
-      const aim = p.id === this.boot.myId ? myAim : p.aim;
-      const moving = Math.hypot(v.tx - v.fx, v.ty - v.fy) > 0.5;
-      const bob = moving && !p.down ? Math.abs(Math.sin(t * 16 + p.id)) : 0;
+      const aim = mine ? myAim : p.aim;
+      const down = mine && pred ? pred.down : p.down;
+      const dashing = mine && pred ? pred.dashing > 0 : p.dash;
+      const moving = v.spd > 12;
+      const bob = moving && !down ? Math.abs(Math.sin(t * 16 + p.id)) : 0;
       v.spr.setPosition(v.x, v.y - bob * 1.5);
       v.spr.setFlipX(Math.cos(aim) < 0);
       v.spr.setScale(1 + bob * 0.06, 1 - bob * 0.08);
-      v.spr.setRotation(p.down ? Math.PI / 2 : moving ? Math.sin(t * 16 + p.id) * 0.08 : 0);
+      v.spr.setRotation(down ? Math.PI / 2 : moving ? Math.sin(t * 16 + p.id) * 0.08 : 0);
       v.spr.setDepth(10 + v.y * 0.01);
       v.flash -= dt;
-      if (p.down) v.spr.setTint(0x6a6070);
+      if (down) v.spr.setTint(0x6a6070);
       else if (v.flash > 0) v.spr.setTintFill(0xffffff);
       else v.spr.clearTint();
-      v.spr.setAlpha(p.inv && !p.down && Math.floor(t * 20) % 2 ? 0.45 : p.dash ? 0.7 : 1);
-      gun.setVisible(!p.down);
+      v.spr.setAlpha(p.off ? 0.35 : p.inv && !down && Math.floor(t * 20) % 2 ? 0.45 : dashing ? 0.7 : 1);
+      gun.setVisible(!down);
       gun.setPosition(v.x + Math.cos(aim) * 3, v.y - 4 + Math.sin(aim) * 3);
       gun.setRotation(aim).setFlipY(Math.cos(aim) < 0).setDepth(10 + v.y * 0.01 + (Math.sin(aim) > 0 ? 0.001 : -0.001));
-      name.setPosition(v.x, v.y - 16).setVisible(p.id !== this.boot.myId);
+      name.setPosition(v.x, v.y - 16).setVisible(!mine);
       shadow.setPosition(v.x, v.y + 1);
-      if (p.id !== this.boot.myId && !p.down) this.bar(o, v.x, v.y - 14, 14, p.hp / p.maxHp, 0xff3355);
+      if (!mine && !p.down) this.bar(o, v.x, v.y - 14, 14, p.hp / p.maxHp, 0xff3355);
       if (p.down) {
         o.lineStyle(2, 0x000000, 0.6).strokeCircle(v.x, v.y - 2, 10);
         o.lineStyle(2, 0x7dff8a, 1).beginPath().arc(v.x, v.y - 2, 10, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * p.rev).strokePath();
@@ -687,10 +738,7 @@ export class GameScene extends Phaser.Scene {
         sx = 1.15;
         sy = 0.9;
       } else if (e.s === 3) rot = Math.sin(t * 30) * 0.25;
-      else {
-        const moving = Math.hypot(v.tx - v.fx, v.ty - v.fy) > 0.3;
-        if (moving) y -= Math.abs(Math.sin(t * 12 + e.id)) * 1.5;
-      }
+      else if (v.spd > 8) y -= Math.abs(Math.sin(t * 12 + e.id)) * 1.5;
       if (e.k === 'boss') y -= Math.sin(t * 3) * 2;
       v.spr.setPosition(x, y).setRotation(rot).setScale(sx, sy).setFlipX(Math.cos(e.a) < 0).setDepth(10 + v.y * 0.01);
       v.flash -= dt;
@@ -710,6 +758,12 @@ export class GameScene extends Phaser.Scene {
       v.spr.setPosition(v.x, yy);
       (v.extra![0] as Phaser.GameObjects.Image).setPosition(v.x, yy).setAlpha(0.4 + Math.sin(t * 5) * 0.2);
     }
+    const dbg = this.boot.debug;
+    const ss = this.client.pred.serverState;
+    if (dbg.shown && dbg.ghost && ss) {
+      o.lineStyle(1, 0xffffff, 0.7).strokeCircle(ss.x, ss.y - 3, 6);
+      o.lineStyle(1, 0xffffff, 0.35).lineBetween(ss.x - 3, ss.y - 3, ss.x + 3, ss.y - 3);
+    }
   }
 
   bar(o: Phaser.GameObjects.Graphics, x: number, y: number, w: number, f: number, c: number) {
@@ -717,17 +771,17 @@ export class GameScene extends Phaser.Scene {
     o.fillStyle(c, 1).fillRect(Math.round(x - w / 2), Math.round(y), Math.max(0, Math.round(w * f)), 2);
   }
 
-  animateTiles(s: SnapMsg | null, now: number) {
-    if (!s) return;
-    const tick = s.tick + Math.floor((now - this.snapTime) / TICK_MS);
-    for (const sp of this.spikes) {
-      const st = spikeState(tick, sp.tx, sp.ty);
-      if (st !== sp.st) {
-        sp.st = st;
-        sp.img.setTexture(`spk${st}`);
-        if (st === 2 && Math.random() < 0.3) this.fx.sparks(sp.tx * TILE + 8, sp.ty * TILE + 8, 2, 0xd8d8e8, 40);
+  animateTiles(now: number) {
+    const tick = Math.floor(this.client.predTick());
+    if (Number.isFinite(tick))
+      for (const sp of this.spikes) {
+        const st = spikeState(tick, sp.tx, sp.ty);
+        if (st !== sp.st) {
+          sp.st = st;
+          sp.img.setTexture(`spk${st}`);
+          if (st === 2 && Math.random() < 0.3) this.fx.sparks(sp.tx * TILE + 8, sp.ty * TILE + 8, 2, 0xd8d8e8, 40);
+        }
       }
-    }
     const lf = Math.floor(now / 260);
     if (lf !== this.lavaFrame) {
       this.lavaFrame = lf;
@@ -742,11 +796,11 @@ export class GameScene extends Phaser.Scene {
     if (this.stairsGlow?.visible) this.stairsGlow.setAlpha(0.5 + Math.sin(tt * 4) * 0.25);
   }
 
-  drawIndicators(s: SnapMsg | null, meView: View | undefined) {
+  drawIndicators(s: WorldView | null, meView: View | undefined) {
     const targets: { x: number; y: number; c: number }[] = [];
     if (s && meView) {
       if (s.stairs) targets.push({ ...this.stairsPos, c: 0xffd23f });
-      for (const p of s.players) if (p.id !== this.boot.myId) targets.push({ x: p.x, y: p.y, c: hex(PLAYER_COLORS[p.c]) });
+      for (const p of s.players) if (p.id !== this.client.myId) targets.push({ x: p.x, y: p.y, c: hex(PLAYER_COLORS[p.c]) });
       if (!s.stairs && s.enemies.length <= 3) for (const e of s.enemies) targets.push({ x: e.x, y: e.y, c: 0xff3355 });
     }
     const view = this.cameras.main.worldView;

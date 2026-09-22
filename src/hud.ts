@@ -1,4 +1,4 @@
-import { FLOORS, ITEM_INFO, PLAYER_COLORS, STAT_INFO, type SnapMsg, type StatKind } from '../shared/protocol';
+import { FLOORS, ITEM_INFO, PLAYER_COLORS, STAT_INFO, type WorldView, type StatKind } from '../shared/protocol';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -53,7 +53,7 @@ export class Hud {
     });
   }
 
-  update(s: SnapMsg, myId: number) {
+  update(s: WorldView, myId: number) {
     const me = s.players.find((p) => p.id === myId);
     if (me) {
       $('hp-fill').style.width = `${(100 * me.hp) / me.maxHp}%`;

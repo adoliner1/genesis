@@ -545,6 +545,94 @@ label {
   z-index: 10;
 }
 
+#conn p {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+#reconnecting {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid #ffd23f;
+  color: #ffd23f;
+  padding: 6px 12px;
+  font-size: 12px;
+  z-index: 9;
+  animation: pulse 1s ease-in-out infinite alternate;
+}
+
+@keyframes pulse {
+  to {
+    opacity: 0.55;
+  }
+}
+
+#netdebug {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 8;
+  background: rgba(8, 5, 12, 0.86);
+  border: 1px solid #3a2a48;
+  color: #cfe8ff;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 8px 10px;
+  max-width: min(460px, calc(100vw - 24px));
+  pointer-events: auto;
+}
+
+#netdebug .nd-head {
+  color: #7dff8a;
+  font-weight: 700;
+  letter-spacing: 2px;
+  margin-bottom: 4px;
+}
+
+#netdebug .nd-head small {
+  color: #8a7f96;
+  font-weight: 400;
+  letter-spacing: 0;
+  margin-left: 6px;
+}
+
+#netdebug pre {
+  margin: 0 0 6px;
+  font: inherit;
+  white-space: pre-wrap;
+}
+
+#netdebug .nd-sim,
+#netdebug .nd-btns {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+#netdebug .nd-btns {
+  margin-top: 6px;
+}
+
+#netdebug input {
+  width: 54px;
+  font: inherit;
+  background: #140c18;
+  color: #fff;
+  border: 1px solid #3a2a48;
+  padding: 2px 4px;
+}
+
+#netdebug button {
+  font: inherit;
+  padding: 3px 8px;
+}
+
 [hidden] {
   display: none !important;
 }

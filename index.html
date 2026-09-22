@@ -68,7 +68,14 @@
       <div id="help">WASD move · Click shoot · RMB/F kick · Space dash</div>
     </section>
 
-    <div id="conn" hidden><p>Connection lost. <button onclick="location.reload()">Reconnect</button></p></div>
+    <div id="reconnecting" hidden>Connection dropped — reconnecting to your slot…</div>
+    <div id="conn" hidden>
+      <p>
+        <span id="conn-msg">Connection lost.</span>
+        <button onclick="location.reload()">Try again</button>
+        <button id="conn-lobby" hidden>Back to lobby</button>
+      </p>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

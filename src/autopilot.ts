@@ -1,4 +1,17 @@
-import { T, TILE, type SnapMsg } from '../shared/protocol';
+import { T, TILE, type WorldView } from '../shared/protocol';
+
+export interface BotView extends Omit<WorldView, 'bullets'> {
+  bullets: { x: number; y: number; e: boolean }[];
+}
+
+export interface BotOutput {
+  mx: number;
+  my: number;
+  aim: number;
+  shoot: boolean;
+  dash: boolean;
+  kick: boolean;
+}
 
 /** Dev/demo helper enabled with ?bot=1: plays the local character so multi-tab tests can run hands-free. */
 export class Autopilot {
@@ -53,9 +66,9 @@ export class Autopilot {
     return null;
   }
 
-  step(s: SnapMsg, myId: number, now: number) {
+  step(s: BotView, myId: number, now: number): BotOutput {
     const me = s.players.find((p) => p.id === myId);
-    const out = { mx: 0, my: 0, aim: 0, shoot: false, dash: false, kick: false };
+    const out: BotOutput = { mx: 0, my: 0, aim: 0, shoot: false, dash: false, kick: false };
     if (!me || !this.map() || me.down) return out;
     if (me.choices && now - this.lastChoose > 600) {
       this.lastChoose = now;

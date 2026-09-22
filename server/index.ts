@@ -7,6 +7,8 @@ import { TICK_RATE, type ClientMsg } from '../shared/protocol.ts';
 import { Room } from './game.ts';
 
 const PORT = Number(process.env.PORT ?? 47291);
+/** Send a snapshot every N simulation ticks (1 = 30 Hz, 2 = 15 Hz). */
+const SEND_EVERY = Math.max(1, Number(process.env.SEND_EVERY) || 1);
 const DIST = join(import.meta.dirname, '..', 'dist');
 const MIME: Record<string, string> = {
   '.html': 'text/html',
@@ -30,7 +32,7 @@ function makeCode(): string {
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://x');
   if (url.pathname === '/health') {
-    res.end(JSON.stringify({ ok: true, rooms: rooms.size }));
+    res.end(JSON.stringify({ ok: true, rooms: rooms.size, tickRate: TICK_RATE, sendEvery: SEND_EVERY }));
     return;
   }
   if (!existsSync(DIST)) {
@@ -47,12 +49,24 @@ const http = createServer(async (req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ server: http, path: '/ws' });
+const wss = new WebSocketServer({ server: http, path: '/ws', perMessageDeflate: false });
+const alive = new WeakMap<WebSocket, boolean>();
 
 wss.on('connection', (ws: WebSocket) => {
+  ws.binaryType = 'nodebuffer';
+  alive.set(ws, true);
+  ws.on('pong', () => alive.set(ws, true));
   let room: Room | null = null;
   let pid = 0;
-  ws.on('message', (raw) => {
+  const fail = (msg: string, reason?: 'expired' | 'full' | 'missing') => ws.send(JSON.stringify({ t: 'error', msg, reason }));
+
+  ws.on('message', (raw, isBinary) => {
+    alive.set(ws, true);
+    if (isBinary) {
+      const p = room?.players.get(pid);
+      if (p && p.net.ws === ws) room!.handleBinary(p, new Uint8Array(raw as Buffer));
+      return;
+    }
     let msg: ClientMsg;
     try {
       msg = JSON.parse(String(raw));
@@ -66,31 +80,54 @@ wss.on('connection', (ws: WebSocket) => {
         rooms.set(code, room);
         pid = room.addPlayer(ws, msg.name)!.id;
         console.log(`room ${code} created`);
-      } else if (msg.t === 'join') {
+      } else if (msg.t === 'join' || msg.t === 'rejoin') {
         const r = rooms.get(String(msg.code).toUpperCase().trim());
-        if (!r) return ws.send(JSON.stringify({ t: 'error', msg: 'No room with that code.' }));
-        const p = r.addPlayer(ws, msg.name);
-        if (!p) return ws.send(JSON.stringify({ t: 'error', msg: 'That room is full (4 players max).' }));
+        if (!r) return fail('No room with that code.', 'missing');
+        const p = msg.t === 'join' ? r.addPlayer(ws, msg.name) : r.rejoin(ws, String(msg.token));
+        if (!p) return msg.t === 'join' ? fail('That room is full (4 players max).', 'full') : fail('Your slot has expired.', 'expired');
         room = r;
         pid = p.id;
       }
       return;
     }
     const p = room.players.get(pid);
-    if (p) room.handle(p, msg);
+    if (p && p.net.ws === ws) room.handle(p, msg);
   });
-  ws.on('close', () => {
-    if (!room) return;
-    room.removePlayer(pid);
-    if (room.empty) {
-      rooms.delete(room.code);
-      console.log(`room ${room.code} closed`);
-    }
-  });
+  ws.on('close', () => room?.disconnect(pid, ws));
 });
 
+// Drop sockets that stop answering so their slot goes offline promptly instead of after a TCP timeout.
 setInterval(() => {
-  for (const r of rooms.values()) r.step();
-}, 1000 / TICK_RATE);
+  for (const ws of wss.clients) {
+    if (!alive.get(ws)) {
+      ws.terminate();
+      continue;
+    }
+    alive.set(ws, false);
+    ws.ping();
+  }
+}, 2500);
 
-http.listen(PORT, () => console.log(`Boneyard server on http://localhost:${PORT} (ws: /ws)`));
+const TICK_MS = 1000 / TICK_RATE;
+let next = performance.now();
+let ticks = 0;
+function loop() {
+  const now = performance.now();
+  if (now - next > 1000) next = now;
+  while (now >= next) {
+    next += TICK_MS;
+    ticks++;
+    for (const [code, r] of rooms) {
+      r.step();
+      if (ticks % SEND_EVERY === 0) r.sendSnapshots();
+      if (r.empty) {
+        rooms.delete(code);
+        console.log(`room ${code} closed`);
+      }
+    }
+  }
+  setTimeout(loop, Math.max(1, next - performance.now()));
+}
+loop();
+
+http.listen(PORT, () => console.log(`Boneyard server on http://localhost:${PORT} (ws: /ws, ${TICK_RATE} Hz sim, ${TICK_RATE / SEND_EVERY} Hz snapshots)`));

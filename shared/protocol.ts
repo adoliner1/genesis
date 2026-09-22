@@ -28,6 +28,8 @@ export const PLAYER_COLORS = ['#4fc3ff', '#ff6b8b', '#ffd23f', '#7dff8a'];
 
 export type EnemyKind = 'grunt' | 'archer' | 'brute' | 'boss';
 
+export const ENEMY_R: Record<EnemyKind, number> = { grunt: 6, archer: 5, brute: 8, boss: 14 };
+
 export type ItemKind = 'potion' | 'twin' | 'bounce' | 'heavy' | 'fang' | 'boots' | 'pierce';
 
 export const ITEM_INFO: Record<ItemKind, { name: string; desc: string }> = {
@@ -51,22 +53,32 @@ export const STAT_INFO: Record<StatKind, { name: string; desc: string }> = {
   kick: { name: 'Mule Kick', desc: '+50% kick force, 2x kick dmg' },
 };
 
-export interface InputMsg {
-  t: 'input';
-  mx: number;
-  my: number;
-  aim: number;
-  shoot: boolean;
-  dash: boolean;
-  kick: boolean;
-}
-
+/** Reliable (JSON text) channel. Inputs, pings and snapshots use the binary channel in shared/net/snapshot.ts. */
 export type ClientMsg =
   | { t: 'create'; name: string }
   | { t: 'join'; code: string; name: string }
-  | InputMsg
+  | { t: 'rejoin'; code: string; token: string }
   | { t: 'choose'; idx: number }
   | { t: 'restart' };
+
+export interface PlayerStats {
+  speed: number;
+  dashCd: number;
+  fireCd: number;
+  multishot: number;
+  bounce: number;
+  pierce: number;
+  bulletR: number;
+}
+
+/** Rarely-changing per-player data, sent reliably on change instead of in every snapshot. */
+export interface PlayerMeta {
+  id: number;
+  name: string;
+  items: ItemKind[];
+  choices: StatKind[] | null;
+  stats: PlayerStats;
+}
 
 export interface PlayerSnap {
   id: number;
@@ -89,6 +101,7 @@ export interface PlayerSnap {
   pending: number;
   kills: number;
   dashCd: number;
+  off: boolean;
 }
 
 export interface EnemySnap {
@@ -110,6 +123,13 @@ export interface BulletSnap {
   vy: number;
   e: boolean;
   r: number;
+  /** Owning player id (0 = enemy) and the input seq/index that spawned it (0 = not predicted). */
+  o: number;
+  sq: number;
+  i: number;
+  t0: number;
+  x0: number;
+  y0: number;
 }
 
 export interface PropSnap {
@@ -128,8 +148,8 @@ export interface ItemSnap {
 export type GameEvent =
   | { e: 'shot'; x: number; y: number; a: number; p: number }
   | { e: 'eshot'; x: number; y: number; a: number }
-  | { e: 'hit'; x: number; y: number; a: number; who: 'enemy' | 'player'; id: number; dmg: number }
-  | { e: 'die'; x: number; y: number; k: EnemyKind; a: number }
+  | { e: 'hit'; x: number; y: number; a: number; who: 'enemy' | 'player'; id: number; dmg: number; by?: number }
+  | { e: 'die'; x: number; y: number; k: EnemyKind; a: number; id: number; by?: number }
   | { e: 'boom'; x: number; y: number; r: number }
   | { e: 'fall'; x: number; y: number; who: 'enemy' | 'player' }
   | { e: 'pickup'; x: number; y: number; k: ItemKind; p: number }
@@ -137,7 +157,7 @@ export type GameEvent =
   | { e: 'kick'; x: number; y: number; a: number; p: number }
   | { e: 'dash'; x: number; y: number; p: number }
   | { e: 'burn'; x: number; y: number }
-  | { e: 'spark'; x: number; y: number }
+  | { e: 'spark'; x: number; y: number; p?: number }
   | { e: 'slam'; x: number; y: number }
   | { e: 'down'; p: number }
   | { e: 'revive'; p: number }
@@ -147,8 +167,8 @@ export type GameEvent =
 
 export type Phase = 'play' | 'over' | 'win';
 
-export interface SnapMsg {
-  t: 'snap';
+/** Client-side decoded view of the world at one point in time. */
+export interface WorldView {
   tick: number;
   phase: Phase;
   floor: number;
@@ -159,12 +179,13 @@ export interface SnapMsg {
   bullets: BulletSnap[];
   barrels: PropSnap[];
   items: ItemSnap[];
-  events: GameEvent[];
 }
 
 export interface FloorMsg {
   t: 'floor';
   floor: number;
+  /** Increments on every floor load so stale snapshots from a previous map are dropped. */
+  ep: number;
   boss: boolean;
   w: number;
   h: number;
@@ -173,7 +194,7 @@ export interface FloorMsg {
 }
 
 export type ServerMsg =
-  | { t: 'joined'; code: string; id: number }
-  | { t: 'error'; msg: string }
-  | FloorMsg
-  | SnapMsg;
+  | { t: 'joined'; code: string; id: number; token: string; tick: number }
+  | { t: 'error'; msg: string; reason?: 'expired' | 'replaced' | 'full' | 'missing' }
+  | { t: 'meta'; players: PlayerMeta[] }
+  | FloorMsg;

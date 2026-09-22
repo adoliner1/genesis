@@ -1,5 +1,7 @@
+import { randomBytes } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import {
+  ENEMY_R,
   FLOORS,
   MAX_PLAYERS,
   T,
@@ -12,46 +14,78 @@ import {
   type GameEvent,
   type ItemKind,
   type Phase,
+  type PlayerMeta,
   type ServerMsg,
-  type SnapMsg,
   type StatKind,
 } from '../shared/protocol.ts';
+import { BTN_SHOOT, neutralInput, type PlayerInput } from '../shared/sim/input.ts';
+import { collides, los, moveBody, solid, tileAt } from '../shared/sim/map.ts';
+import {
+  BULLET_LIFE,
+  BULLET_SPEED,
+  DT,
+  MUZZLE,
+  PLAYER_R,
+  gunner,
+  newMoveState,
+  pickMove,
+  shotAngles,
+  type MoveState,
+  type MoveStats,
+} from '../shared/sim/movement.ts';
+import { DEAD, BOUNCED, bulletHalfStep } from '../shared/sim/bullets.ts';
+import {
+  ENEMY_KINDS,
+  ITEM_KINDS,
+  MSG_INPUT,
+  MSG_PING,
+  PF,
+  decodeInputs,
+  encodePong,
+  encodeSnapshot,
+  qang8,
+  qpos,
+  type Table,
+  type World,
+} from '../shared/net/snapshot.ts';
 import { generateFloor, type FloorData } from './dungeon.ts';
 
-const DT = 1 / TICK_RATE;
-const PLAYER_R = 5;
 const START_FLOOR = Math.min(FLOORS, Math.max(1, Number(process.env.START_FLOOR) || 1));
 const STATS: StatKind[] = ['vit', 'pow', 'rof', 'spd', 'dash', 'kick'];
+/** Furthest back (in ticks) the server will rewind targets for a shooter's view. */
+const MAX_REWIND = 12;
+const HIST = 16;
+const WORLD_HISTORY = 64;
+/** Input queue depth above which the server fast-forwards a player to cut latency. */
+const MAX_INPUT_BUF = 6;
+const OFFLINE_TICKS = TICK_RATE * 90;
 
-interface Player {
+interface NetState {
+  ws: WebSocket | null;
+  token: string;
+  offline: boolean;
+  offlineAt: number;
+  queue: Map<number, PlayerInput>;
+  nextSeq: number;
+  last: PlayerInput;
+  ack: number;
+  buf: number;
+  starved: number;
+  snapAck: number;
+  metaKey: string;
+}
+
+interface Player extends MoveState, MoveStats {
   id: number;
   name: string;
   c: number;
-  ws: WebSocket;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  aim: number;
-  mx: number;
-  my: number;
-  shoot: boolean;
-  wantDash: boolean;
-  wantKick: boolean;
+  net: NetState;
   hp: number;
   maxHp: number;
   dmg: number;
-  fireCd: number;
-  fireT: number;
-  speed: number;
-  dashCd: number;
-  dashT: number;
-  dashing: number;
-  kickT: number;
   kickMult: number;
   kickDmg: number;
   invuln: number;
-  stagger: number;
   hazT: number;
   lvl: number;
   xp: number;
@@ -64,7 +98,6 @@ interface Player {
   lifesteal: number;
   pierce: number;
   bulletR: number;
-  down: boolean;
   rev: number;
   safeX: number;
   safeY: number;
@@ -97,6 +130,9 @@ interface Enemy {
   pattern: number;
   reps: number;
   phase2: boolean;
+  born: number;
+  hx: Float64Array;
+  hy: Float64Array;
 }
 
 interface Bullet {
@@ -107,6 +143,10 @@ interface Bullet {
   vy: number;
   enemy: boolean;
   pid: number;
+  seq: number;
+  idx: number;
+  /** Shooter's view lag in ticks: enemies are tested where the shooter saw them. */
+  lag: number;
   dmg: number;
   knock: number;
   life: number;
@@ -114,6 +154,10 @@ interface Bullet {
   pierce: number;
   r: number;
   hit: Set<number>;
+  t0: number;
+  x0: number;
+  y0: number;
+  dirty: boolean;
 }
 
 interface Barrel {
@@ -134,13 +178,13 @@ interface Item {
 }
 
 const ENEMY_DEFS: Record<EnemyKind, { hp: number; r: number; mass: number; speed: number; xp: number }> = {
-  grunt: { hp: 30, r: 6, mass: 1, speed: 58, xp: 6 },
-  archer: { hp: 22, r: 5, mass: 0.9, speed: 48, xp: 8 },
-  brute: { hp: 70, r: 8, mass: 2.4, speed: 40, xp: 14 },
-  boss: { hp: 2200, r: 14, mass: 12, speed: 42, xp: 0 },
+  grunt: { hp: 30, r: ENEMY_R.grunt, mass: 1, speed: 58, xp: 6 },
+  archer: { hp: 22, r: ENEMY_R.archer, mass: 0.9, speed: 48, xp: 8 },
+  brute: { hp: 70, r: ENEMY_R.brute, mass: 2.4, speed: 40, xp: 14 },
+  boss: { hp: 2200, r: ENEMY_R.boss, mass: 12, speed: 42, xp: 0 },
 };
 
-const len = (x: number, y: number) => Math.hypot(x, y);
+const len = (x: number, y: number) => Math.sqrt(x * x + y * y);
 const r1 = (v: number) => Math.round(v * 10) / 10;
 const angDiff = (a: number, b: number) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
 
@@ -155,6 +199,7 @@ export class Room {
   tick = 0;
   phase: Phase = 'play';
   floor = 1;
+  ep = 0;
   map!: FloorData;
   stairsOpen = false;
   flow = new Int32Array(0);
@@ -162,6 +207,9 @@ export class Room {
   winTimer = -1;
   floorMsg!: FloorMsg;
   runSeed = (Math.random() * 1e9) | 0;
+  worlds = new Map<number, World>();
+  eventLog: [number, GameEvent[]][] = [];
+  bytesOut = 0;
 
   constructor(code: string) {
     this.code = code;
@@ -172,13 +220,17 @@ export class Room {
     return this.players.size === 0;
   }
 
+  private online() {
+    return [...this.players.values()].filter((p) => !p.net.offline);
+  }
+
   addPlayer(ws: WebSocket, name: string): Player | null {
     if (this.players.size >= MAX_PLAYERS) return null;
     const used = new Set([...this.players.values()].map((p) => p.c));
     let c = 0;
     while (used.has(c)) c++;
     const p = this.newPlayer(ws, name, c);
-    const anchor = [...this.players.values()].find((o) => !o.down);
+    const anchor = this.online().find((o) => !o.down);
     const sx = anchor ? anchor.x : this.map.spawn.x;
     const sy = anchor ? anchor.y : this.map.spawn.y;
     p.x = p.safeX = sx + (c % 2 ? 8 : -8);
@@ -191,10 +243,43 @@ export class Room {
     this.players.set(p.id, p);
     for (const e of this.enemies)
       if (e.k === 'boss' && e.hp === e.maxHp) e.hp = e.maxHp = Math.round(ENEMY_DEFS.boss.hp * (0.6 + 0.4 * this.players.size));
-    this.send(p, { t: 'joined', code: this.code, id: p.id });
-    this.send(p, this.floorMsg);
+    this.greet(p);
     this.events.push({ e: 'msg', text: `${p.name} joined the party` });
     return p;
+  }
+
+  /** Reattach a socket to an existing slot. Returns null if the token is unknown (slot expired). */
+  rejoin(ws: WebSocket, token: string): Player | null {
+    const p = [...this.players.values()].find((o) => o.net.token === token);
+    if (!p) return null;
+    const old = p.net.ws;
+    if (old && old !== ws) {
+      this.sendTo(old, { t: 'error', msg: 'This slot was opened in another tab.', reason: 'replaced' });
+      old.close();
+    }
+    const wasOffline = p.net.offline;
+    Object.assign(p.net, { ws, offline: false, queue: new Map(), nextSeq: 0, snapAck: 0, metaKey: '', buf: 0 });
+    p.invuln = Math.max(p.invuln, 45);
+    this.greet(p);
+    if (wasOffline) this.events.push({ e: 'msg', text: `${p.name} reconnected` });
+    return p;
+  }
+
+  disconnect(id: number, ws: WebSocket) {
+    const p = this.players.get(id);
+    if (!p || p.net.ws !== ws) return;
+    p.net.ws = null;
+    p.net.offline = true;
+    p.net.offlineAt = this.tick;
+    p.vx = p.vy = 0;
+    this.events.push({ e: 'msg', text: `${p.name} lost connection — holding their slot` });
+    this.checkWipe();
+  }
+
+  private greet(p: Player) {
+    this.send(p, { t: 'joined', code: this.code, id: p.id, token: p.net.token, tick: this.tick });
+    this.send(p, this.floorMsg);
+    this.send(p, { t: 'meta', players: this.metas() });
   }
 
   removePlayer(id: number) {
@@ -205,36 +290,39 @@ export class Room {
     this.checkWipe();
   }
 
-  private newPlayer(ws: WebSocket, name: string, c: number): Player {
+  private newNet(ws: WebSocket | null): NetState {
     return {
+      ws,
+      token: randomBytes(12).toString('hex'),
+      offline: false,
+      offlineAt: 0,
+      queue: new Map(),
+      nextSeq: 0,
+      last: neutralInput(0),
+      ack: 0,
+      buf: 0,
+      starved: 0,
+      snapAck: 0,
+      metaKey: '',
+    };
+  }
+
+  private newPlayer(ws: WebSocket | null, name: string, c: number): Player {
+    return {
+      ...newMoveState(),
       id: this.nextId++,
       name: name.slice(0, 14) || 'Crawler',
       c,
-      ws,
-      x: 0,
-      y: 0,
-      vx: 0,
-      vy: 0,
-      aim: 0,
-      mx: 0,
-      my: 0,
-      shoot: false,
-      wantDash: false,
-      wantKick: false,
+      net: this.newNet(ws),
       hp: 100,
       maxHp: 100,
       dmg: 10,
       fireCd: 7,
-      fireT: 0,
       speed: 92,
       dashCd: 36,
-      dashT: 0,
-      dashing: 0,
-      kickT: 0,
       kickMult: 1,
       kickDmg: 6,
       invuln: 30,
-      stagger: 0,
       hazT: 0,
       lvl: 1,
       xp: 0,
@@ -247,7 +335,6 @@ export class Room {
       lifesteal: 0,
       pierce: 0,
       bulletR: 2,
-      down: false,
       rev: 0,
       safeX: 0,
       safeY: 0,
@@ -257,16 +344,6 @@ export class Room {
 
   handle(p: Player, msg: ClientMsg) {
     switch (msg.t) {
-      case 'input': {
-        const m = len(msg.mx, msg.my);
-        p.mx = m > 1 ? msg.mx / m : msg.mx || 0;
-        p.my = m > 1 ? msg.my / m : msg.my || 0;
-        if (Number.isFinite(msg.aim)) p.aim = msg.aim;
-        p.shoot = !!msg.shoot;
-        if (msg.dash) p.wantDash = true;
-        if (msg.kick) p.wantKick = true;
-        break;
-      }
       case 'choose': {
         const set = p.pending[0];
         if (!set) break;
@@ -282,11 +359,47 @@ export class Room {
     }
   }
 
+  handleBinary(p: Player, data: Uint8Array) {
+    if (data[0] === MSG_PING) {
+      if (p.net.ws && data.length >= 9) {
+        const t = new DataView(data.buffer, data.byteOffset, data.byteLength).getFloat64(1, true);
+        this.sendBin(p, encodePong(t, this.tick));
+      }
+      return;
+    }
+    if (data[0] !== MSG_INPUT) return;
+    const m = decodeInputs(data);
+    if (!m) return;
+    const n = p.net;
+    if (m.ackTick > n.snapAck && m.ackTick <= this.tick) n.snapAck = m.ackTick;
+    if (!m.inputs.length) return;
+    if (!n.nextSeq) n.nextSeq = m.inputs[m.inputs.length - 1].seq;
+    for (const inp of m.inputs)
+      if (inp.seq >= n.nextSeq && inp.seq < n.nextSeq + 256 && !n.queue.has(inp.seq)) n.queue.set(inp.seq, inp);
+  }
+
+  /** Pops this tick's input. A missing input is replaced by the last one (minus one-shot buttons). */
+  private takeInput(p: Player): PlayerInput | null {
+    const n = p.net;
+    if (!n.nextSeq) return null;
+    let inp = n.queue.get(n.nextSeq);
+    if (inp) n.queue.delete(n.nextSeq);
+    else {
+      inp = { ...n.last, seq: n.nextSeq, buttons: n.last.buttons & BTN_SHOOT };
+      n.starved++;
+    }
+    n.last = inp;
+    n.ack = n.nextSeq++;
+    return inp;
+  }
+
   private restartRun() {
     this.runSeed = (Math.random() * 1e9) | 0;
     for (const [id, old] of this.players) {
-      const p = this.newPlayer(old.ws, old.name, old.c);
+      const p = this.newPlayer(null, old.name, old.c);
       p.id = id;
+      p.net = old.net;
+      p.net.metaKey = '';
       this.players.set(id, p);
     }
     this.phase = 'play';
@@ -296,6 +409,7 @@ export class Room {
 
   private loadFloor(n: number) {
     this.floor = n;
+    this.ep++;
     const boss = n === FLOORS;
     this.map = generateFloor(n, this.runSeed + n * 7919, boss);
     this.enemies = [];
@@ -311,6 +425,7 @@ export class Room {
       p.x = p.safeX = this.map.spawn.x + ((i % 2) * 2 - 1) * 8;
       p.y = p.safeY = this.map.spawn.y + (i > 1 ? 10 : 0);
       p.vx = p.vy = 0;
+      p.dashing = 0;
       p.invuln = 45;
       if (p.down) {
         p.down = false;
@@ -321,6 +436,7 @@ export class Room {
     this.floorMsg = {
       t: 'floor',
       floor: n,
+      ep: this.ep,
       boss,
       w: this.map.w,
       h: this.map.h,
@@ -362,55 +478,31 @@ export class Room {
       pattern: 0,
       reps: 0,
       phase2: false,
+      born: this.tick,
+      hx: new Float64Array(HIST).fill(x),
+      hy: new Float64Array(HIST).fill(y),
     });
   }
 
   // ---------- map helpers ----------
   tileAt(px: number, py: number): number {
-    const tx = Math.floor(px / TILE);
-    const ty = Math.floor(py / TILE);
-    if (tx < 0 || ty < 0 || tx >= this.map.w || ty >= this.map.h) return T.Wall;
-    return this.map.tiles[ty * this.map.w + tx];
+    return tileAt(this.map, px, py);
   }
 
   solid(px: number, py: number) {
-    return this.tileAt(px, py) === T.Wall;
+    return solid(this.map, px, py);
   }
 
   collides(x: number, y: number, r: number) {
-    const steps = Math.max(1, Math.ceil((r * 2) / 8));
-    for (let i = 0; i <= steps; i++) {
-      const o = -r + (2 * r * i) / steps;
-      if (this.solid(x + o, y - r) || this.solid(x + o, y + r) || this.solid(x - r, y + o) || this.solid(x + r, y + o))
-        return true;
-    }
-    return false;
+    return collides(this.map, x, y, r);
   }
 
-  /** Moves with axis-separated tile collision, returns impact speed if a wall was hit. */
   move(o: { x: number; y: number; vx: number; vy: number }, r: number, bounce = 0): number {
-    let impact = 0;
-    const nx = o.x + o.vx * DT;
-    if (this.collides(nx, o.y, r)) {
-      impact = Math.max(impact, Math.abs(o.vx));
-      o.vx = -o.vx * bounce;
-    } else o.x = nx;
-    const ny = o.y + o.vy * DT;
-    if (this.collides(o.x, ny, r)) {
-      impact = Math.max(impact, Math.abs(o.vy));
-      o.vy = -o.vy * bounce;
-    } else o.y = ny;
-    return impact;
+    return moveBody(this.map, o, r, DT, bounce);
   }
 
   los(x0: number, y0: number, x1: number, y1: number) {
-    const d = len(x1 - x0, y1 - y0);
-    const n = Math.ceil(d / 6);
-    for (let i = 1; i < n; i++) {
-      const t = i / n;
-      if (this.solid(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)) return false;
-    }
-    return true;
+    return los(this.map, x0, y0, x1, y1);
   }
 
   private passable(i: number) {
@@ -424,7 +516,7 @@ export class Room {
     this.flow.fill(-1);
     const q: number[] = [];
     for (const p of this.players.values()) {
-      if (p.down) continue;
+      if (p.down || p.net.offline) continue;
       const i = Math.floor(p.y / TILE) * w + Math.floor(p.x / TILE);
       if (i >= 0 && i < w * h && this.flow[i] < 0) {
         this.flow[i] = 0;
@@ -476,6 +568,32 @@ export class Room {
     return [bx / bl, by / bl];
   }
 
+  // ---------- lag compensation ----------
+  /** Enemy position as of (possibly fractional) tick `t`, from a short per-enemy history ring. */
+  private posAt(e: Enemy, t: number): [number, number] {
+    if (t >= this.tick) return [e.x, e.y];
+    const lo = Math.max(t, e.born, this.tick - HIST + 1);
+    const t0 = Math.floor(lo);
+    const f = lo - t0;
+    const i0 = t0 & (HIST - 1);
+    const ax = e.hx[i0];
+    const ay = e.hy[i0];
+    if (f === 0) return [ax, ay];
+    let bx = e.x;
+    let by = e.y;
+    if (t0 + 1 < this.tick) {
+      const i1 = (t0 + 1) & (HIST - 1);
+      bx = e.hx[i1];
+      by = e.hy[i1];
+    }
+    return [ax + (bx - ax) * f, ay + (by - ay) * f];
+  }
+
+  private viewLag(inp: PlayerInput) {
+    if (!inp.vt8) return 0;
+    return Math.max(0, Math.min(MAX_REWIND, this.tick - inp.vt8 / 8));
+  }
+
   // ---------- combat helpers ----------
   private damageEnemy(e: Enemy, dmg: number, dx: number, dy: number, knock: number, pid: number, stagger = 5) {
     if (e.hp <= 0) return;
@@ -485,7 +603,7 @@ export class Room {
     e.vy += dy * kf;
     if (e.k !== 'boss' || kf > 60) e.stagger = Math.max(e.stagger, stagger);
     e.aggro = true;
-    this.events.push({ e: 'hit', x: r1(e.x), y: r1(e.y), a: r1(Math.atan2(dy, dx)), who: 'enemy', id: e.id, dmg: Math.round(dmg) });
+    this.events.push({ e: 'hit', x: r1(e.x), y: r1(e.y), a: r1(Math.atan2(dy, dx)), who: 'enemy', id: e.id, dmg: Math.round(dmg), by: pid });
     if (e.hp <= 0) this.killEnemy(e, pid, Math.atan2(dy, dx));
     else if (e.k === 'boss' && !e.phase2 && e.hp < e.maxHp / 2) {
       e.phase2 = true;
@@ -497,7 +615,7 @@ export class Room {
 
   private killEnemy(e: Enemy, pid: number, a: number, fell = false) {
     e.hp = 0;
-    if (!fell) this.events.push({ e: 'die', x: r1(e.x), y: r1(e.y), k: e.k, a: r1(a) });
+    if (!fell) this.events.push({ e: 'die', x: r1(e.x), y: r1(e.y), k: e.k, a: r1(a), id: e.id, by: pid });
     const killer = this.players.get(pid);
     if (killer) {
       killer.kills++;
@@ -514,7 +632,7 @@ export class Room {
   }
 
   private damagePlayer(p: Player, dmg: number, dx: number, dy: number, knock: number, ignoreDash = false) {
-    if (p.down || p.invuln > 0 || (p.dashing > 0 && !ignoreDash) || this.phase !== 'play') return;
+    if (p.down || p.net.offline || p.invuln > 0 || (p.dashing > 0 && !ignoreDash) || this.phase !== 'play') return;
     p.hp -= dmg;
     p.invuln = 16;
     p.vx += dx * knock;
@@ -528,15 +646,15 @@ export class Room {
     p.hp = 0;
     p.down = true;
     p.rev = 0;
-    p.shoot = false;
     this.events.push({ e: 'down', p: p.id });
     this.events.push({ e: 'msg', text: `${p.name} is down!` });
     this.checkWipe();
   }
 
   private checkWipe() {
-    if (this.phase !== 'play' || this.players.size === 0) return;
-    if ([...this.players.values()].every((p) => p.down)) {
+    if (this.phase !== 'play') return;
+    const on = this.online();
+    if (on.length && on.every((p) => p.down)) {
       this.phase = 'over';
       this.events.push({ e: 'msg', text: 'THE PARTY HAS FALLEN', big: true });
     }
@@ -646,58 +764,67 @@ export class Room {
     this.bullets = this.bullets.filter((b) => !b.enemy || len(b.x - x, b.y - y) > R);
   }
 
-  private fire(p: Player) {
-    const n = p.multishot;
-    const spread = 0.12;
-    for (let i = 0; i < n; i++) {
-      const a = p.aim + (i - (n - 1) / 2) * spread + (Math.random() - 0.5) * 0.05;
-      const cx = Math.cos(a);
-      const cy = Math.sin(a);
-      this.bullets.push({
-        id: this.nextId++,
-        x: p.x + Math.cos(p.aim) * 7,
-        y: p.y + Math.sin(p.aim) * 7,
-        vx: cx * 330,
-        vy: cy * 330,
-        enemy: false,
-        pid: p.id,
-        dmg: p.dmg,
-        knock: 110 * p.knock,
-        life: 40,
-        bounce: p.bounce,
-        pierce: p.pierce,
-        r: p.bulletR,
-        hit: new Set(),
-      });
-    }
-    p.vx -= Math.cos(p.aim) * 22;
-    p.vy -= Math.sin(p.aim) * 22;
-    this.events.push({ e: 'shot', x: r1(p.x), y: r1(p.y), a: r1(p.aim), p: p.id });
-  }
-
-  private enemyShoot(e: Enemy, a: number, speed = 125, dmg = 9) {
-    this.bullets.push({
+  private newBullet(x: number, y: number, vx: number, vy: number): Bullet {
+    return {
       id: this.nextId++,
-      x: e.x + Math.cos(a) * (e.r + 2),
-      y: e.y + Math.sin(a) * (e.r + 2),
-      vx: Math.cos(a) * speed,
-      vy: Math.sin(a) * speed,
+      x,
+      y,
+      vx,
+      vy,
       enemy: true,
       pid: 0,
-      dmg,
-      knock: 130,
-      life: 110,
+      seq: 0,
+      idx: 0,
+      lag: 0,
+      dmg: 0,
+      knock: 0,
+      life: 0,
       bounce: 0,
       pierce: 0,
       r: 3,
       hit: new Set(),
-    });
+      t0: 0,
+      x0: x,
+      y0: y,
+      dirty: true,
+    };
   }
 
-  private kick(p: Player) {
+  private fire(p: Player, inp: PlayerInput) {
+    const lag = this.viewLag(inp);
+    shotAngles(p.aim, p.multishot, inp.seq).forEach((a, i) => {
+      const b = this.newBullet(p.x + Math.cos(p.aim) * MUZZLE, p.y + Math.sin(p.aim) * MUZZLE, Math.cos(a) * BULLET_SPEED, Math.sin(a) * BULLET_SPEED);
+      Object.assign(b, {
+        enemy: false,
+        pid: p.id,
+        seq: inp.seq,
+        idx: i,
+        lag,
+        dmg: p.dmg,
+        knock: 110 * p.knock,
+        life: BULLET_LIFE,
+        bounce: p.bounce,
+        pierce: p.pierce,
+        r: p.bulletR,
+      });
+      this.bullets.push(b);
+    });
+    this.events.push({ e: 'shot', x: r1(p.x), y: r1(p.y), a: r1(p.aim), p: p.id });
+  }
+
+  private enemyShoot(e: Enemy, a: number, speed = 125, dmg = 9) {
+    const b = this.newBullet(e.x + Math.cos(a) * (e.r + 2), e.y + Math.sin(a) * (e.r + 2), Math.cos(a) * speed, Math.sin(a) * speed);
+    b.dmg = dmg;
+    b.knock = 130;
+    b.life = 110;
+    this.bullets.push(b);
+  }
+
+  private kick(p: Player, inp: PlayerInput) {
     const a = p.aim;
     const cx = Math.cos(a);
     const cy = Math.sin(a);
+    const seen = this.tick - this.viewLag(inp);
     this.events.push({ e: 'kick', x: r1(p.x + cx * 8), y: r1(p.y + cy * 8), a: r1(a), p: p.id });
     const inCone = (x: number, y: number, range: number) => {
       const dx = x - p.x;
@@ -705,8 +832,10 @@ export class Room {
       const d = len(dx, dy);
       return d < range && (d < 6 || angDiff(Math.atan2(dy, dx), a) < 0.95);
     };
-    for (const e of this.enemies)
-      if (inCone(e.x, e.y, 20 + e.r)) this.damageEnemy(e, p.kickDmg, cx, cy, 380 * p.kickMult, p.id, 22);
+    for (const e of this.enemies) {
+      const [ex, ey] = this.posAt(e, seen);
+      if (inCone(ex, ey, 20 + e.r) || inCone(e.x, e.y, 20 + e.r)) this.damageEnemy(e, p.kickDmg, cx, cy, 380 * p.kickMult, p.id, 22);
+    }
     for (const b of this.barrels)
       if (inCone(b.x, b.y, 26)) {
         b.vx = cx * 320 * p.kickMult;
@@ -717,12 +846,15 @@ export class Room {
       if (b.enemy && inCone(b.x, b.y, 28)) {
         b.enemy = false;
         b.pid = p.id;
+        b.seq = 0;
+        b.lag = this.viewLag(inp);
         b.dmg = 18;
         b.knock = 160;
         b.life = 60;
         const sp = len(b.vx, b.vy) * 1.6;
         b.vx = cx * sp;
         b.vy = cy * sp;
+        b.dirty = true;
         this.events.push({ e: 'deflect', x: r1(b.x), y: r1(b.y) });
       }
   }
@@ -731,7 +863,7 @@ export class Room {
     let best: Player | null = null;
     let bd = 1e9;
     for (const p of this.players.values()) {
-      if (p.down) continue;
+      if (p.down || p.net.offline) continue;
       const d = len(p.x - x, p.y - y);
       if (d < bd) {
         bd = d;
@@ -759,144 +891,191 @@ export class Room {
         this.events.push({ e: 'msg', text: 'The stairs down are open!' });
       }
       if (this.winTimer > 0 && --this.winTimer === 0) this.phase = 'win';
+    } else for (const p of this.players.values()) if (!p.net.offline) this.takeInput(p);
+
+    for (const p of this.players.values())
+      if (p.net.offline && this.tick - p.net.offlineAt > OFFLINE_TICKS) this.removePlayer(p.id);
+
+    for (const b of this.bullets)
+      if (b.dirty) {
+        b.dirty = false;
+        b.t0 = this.tick;
+        b.x0 = b.x;
+        b.y0 = b.y;
+      }
+    const hi = this.tick & (HIST - 1);
+    for (const e of this.enemies) {
+      e.hx[hi] = e.x;
+      e.hy[hi] = e.y;
     }
-    const snap: SnapMsg = {
-      t: 'snap',
+
+    const world = this.buildWorld();
+    this.worlds.set(this.tick, world);
+    this.worlds.delete(this.tick - WORLD_HISTORY);
+    if (this.events.length) this.eventLog.push([this.tick, this.events]);
+    while (this.eventLog.length && this.eventLog[0][0] <= this.tick - WORLD_HISTORY) this.eventLog.shift();
+    this.events = [];
+    this.syncMeta();
+  }
+
+  private buildWorld(): World {
+    const players: Table = new Map();
+    for (const p of [...this.players.values()].sort((a, b) => a.id - b.id)) {
+      const flags = (p.down ? PF.down : 0) | (p.dashing > 0 ? PF.dash : 0) | (p.invuln > 0 ? PF.inv : 0) | (p.net.offline ? PF.off : 0);
+      players.set(p.id, [
+        qpos(p.x),
+        qpos(p.y),
+        qang8(p.aim),
+        Math.max(0, Math.ceil(p.hp)),
+        p.maxHp,
+        flags,
+        Math.round(Math.min(1, p.rev) * 255),
+        p.lvl,
+        Math.round(p.xp),
+        p.xpNext,
+        p.kills,
+        p.pending.length,
+        Math.round(Math.min(1, Math.max(0, p.dashT) / p.dashCd) * 255),
+        p.c,
+      ]);
+    }
+    const enemies: Table = new Map();
+    for (const e of this.enemies)
+      enemies.set(e.id, [
+        ENEMY_KINDS.indexOf(e.k as (typeof ENEMY_KINDS)[number]),
+        qpos(e.x),
+        qpos(e.y),
+        Math.max(0, Math.ceil(e.hp)),
+        e.maxHp,
+        qang8(e.a),
+        e.stagger > 0 && e.k !== 'boss' ? 3 : e.s,
+      ]);
+    const bullets: Table = new Map();
+    for (const b of this.bullets)
+      bullets.set(b.id, [
+        b.t0,
+        qpos(b.x0),
+        qpos(b.y0),
+        Math.round(b.vx),
+        Math.round(b.vy),
+        (b.enemy ? 1 : 0) | (Math.min(7, b.r) << 1),
+        b.enemy ? 0 : b.pid,
+        b.enemy ? 0 : b.seq,
+        b.idx,
+      ]);
+    const barrels: Table = new Map();
+    for (const b of this.barrels) barrels.set(b.id, [qpos(b.x), qpos(b.y)]);
+    const items: Table = new Map();
+    for (const it of this.items) items.set(it.id, [ITEM_KINDS.indexOf(it.k), qpos(it.x), qpos(it.y)]);
+    return {
       tick: this.tick,
+      ep: this.ep,
       phase: this.phase,
       floor: this.floor,
       left: this.enemies.length,
       stairs: this.stairsOpen,
-      players: [...this.players.values()].map((p) => ({
-        id: p.id,
-        name: p.name,
-        c: p.c,
-        x: r1(p.x),
-        y: r1(p.y),
-        aim: r1(p.aim),
-        hp: Math.ceil(p.hp),
-        maxHp: p.maxHp,
-        lvl: p.lvl,
-        xp: p.xp,
-        xpNext: p.xpNext,
-        down: p.down,
-        rev: r1(p.rev),
-        dash: p.dashing > 0,
-        inv: p.invuln > 0,
-        items: p.items,
-        choices: p.pending[0] ?? null,
-        pending: p.pending.length,
-        kills: p.kills,
-        dashCd: r1(Math.max(0, p.dashT) / p.dashCd),
-      })),
-      enemies: this.enemies.map((e) => ({
-        id: e.id,
-        k: e.k,
-        x: r1(e.x),
-        y: r1(e.y),
-        hp: Math.ceil(e.hp),
-        maxHp: e.maxHp,
-        a: r1(e.a),
-        s: e.stagger > 0 && e.k !== 'boss' ? 3 : e.s,
-      })),
-      bullets: this.bullets.map((b) => ({ id: b.id, x: r1(b.x), y: r1(b.y), vx: Math.round(b.vx), vy: Math.round(b.vy), e: b.enemy, r: b.r })),
-      barrels: this.barrels.map((b) => ({ id: b.id, x: r1(b.x), y: r1(b.y) })),
-      items: this.items.map((i) => ({ id: i.id, x: r1(i.x), y: r1(i.y), k: i.k })),
-      events: this.events,
+      tables: [players, enemies, bullets, barrels, items],
     };
-    this.broadcast(snap);
-    this.events = [];
+  }
+
+  /** Per-client delta snapshot against the newest state that client has acknowledged. */
+  sendSnapshots() {
+    const world = this.worlds.get(this.tick);
+    if (!world) return;
+    for (const p of this.players.values()) {
+      if (!p.net.ws || p.net.ws.readyState !== 1) continue;
+      const base = p.net.snapAck ? this.worlds.get(p.net.snapAck) ?? null : null;
+      const since = base ? base.tick : this.tick - 1;
+      const events = this.eventLog.filter(([t]) => t > since);
+      const bytes = encodeSnapshot(world, base, { ack: p.net.ack, buf: p.net.buf, self: pickMove(p), events });
+      this.sendBin(p, bytes);
+    }
+  }
+
+  private metas(): PlayerMeta[] {
+    return [...this.players.values()].map((p) => ({
+      id: p.id,
+      name: p.name,
+      items: p.items,
+      choices: p.pending[0] ?? null,
+      stats: {
+        speed: p.speed,
+        dashCd: p.dashCd,
+        fireCd: p.fireCd,
+        multishot: p.multishot,
+        bounce: p.bounce,
+        pierce: p.pierce,
+        bulletR: p.bulletR,
+      },
+    }));
+  }
+
+  private metaKey = '';
+  private syncMeta() {
+    const metas = this.metas();
+    const key = JSON.stringify(metas);
+    if (key === this.metaKey) return;
+    this.metaKey = key;
+    this.broadcast({ t: 'meta', players: metas });
   }
 
   private updatePlayers() {
     for (const p of this.players.values()) {
-      p.invuln--;
-      p.stagger--;
-      p.hazT--;
-      if (p.down) {
-        p.vx *= 0.8;
-        p.vy *= 0.8;
-        this.move(p, PLAYER_R);
-        p.wantDash = p.wantKick = false;
-        continue;
+      if (p.net.offline) continue;
+      const inp = this.takeInput(p);
+      if (!inp) continue;
+      if (this.stepPlayer(p, inp)) return;
+      // Fast-forward through a backlog (e.g. after a lag spike) instead of carrying the delay.
+      for (let extra = 0; extra < 2 && p.net.queue.size > MAX_INPUT_BUF; extra++) {
+        const more = this.takeInput(p);
+        if (more && this.stepPlayer(p, more)) return;
       }
-      p.fireT = Math.max(p.fireT - 1, -1);
-      p.dashT--;
-      p.kickT--;
+      p.net.buf = p.net.queue.size;
+    }
+  }
 
-      if (p.wantDash && p.dashT <= 0) {
-        let dx = p.mx;
-        let dy = p.my;
-        if (!dx && !dy) {
-          dx = Math.cos(p.aim);
-          dy = Math.sin(p.aim);
-        }
-        const d = len(dx, dy) || 1;
-        p.vx = (dx / d) * 310;
-        p.vy = (dy / d) * 310;
-        p.dashing = 7;
-        p.dashT = p.dashCd;
-        this.events.push({ e: 'dash', x: r1(p.x), y: r1(p.y), p: p.id });
-      }
-      p.wantDash = false;
+  /** Runs one input for one player. Returns true if the floor changed. */
+  private stepPlayer(p: Player, inp: PlayerInput): boolean {
+    p.invuln--;
+    p.hazT--;
+    const res = gunner.step(p, p, inp, this.map);
+    if (p.down) return false;
+    if (res.dashed) this.events.push({ e: 'dash', x: r1(p.x), y: r1(p.y), p: p.id });
+    if (res.fired) this.fire(p, inp);
+    if (res.kicked) this.kick(p, inp);
 
-      if (p.dashing > 0) {
-        p.dashing--;
-        if (p.dashing === 0) {
-          p.vx *= 0.4;
-          p.vy *= 0.4;
-        }
-      } else if (p.stagger > 0) {
-        p.vx *= 0.85;
-        p.vy *= 0.85;
-      } else {
-        p.vx += (p.mx * p.speed - p.vx) * 0.3;
-        p.vy += (p.my * p.speed - p.vy) * 0.3;
+    const tile = this.tileAt(p.x, p.y);
+    if (p.dashing <= 0) {
+      if (tile === T.Pit) {
+        this.events.push({ e: 'fall', x: r1(p.x), y: r1(p.y), who: 'player' });
+        p.x = p.safeX;
+        p.y = p.safeY;
+        p.vx = p.vy = 0;
+        p.invuln = 0;
+        this.damagePlayer(p, 15, 0, 0, 0, true);
+        p.invuln = 40;
+        return false;
       }
-      this.move(p, PLAYER_R);
-
-      if (p.shoot && p.fireT <= 0 && p.dashing <= 0) {
-        this.fire(p);
-        p.fireT += p.fireCd;
+      if (tile === T.Lava && p.hazT <= 0) {
+        p.hazT = 5;
+        p.hp -= 6;
+        this.events.push({ e: 'burn', x: r1(p.x), y: r1(p.y) });
+        if (p.hp <= 0) this.downPlayer(p);
       }
-      if (p.wantKick && p.kickT <= 0) {
-        this.kick(p);
-        p.kickT = 16;
-      }
-      p.wantKick = false;
-
-      const tile = this.tileAt(p.x, p.y);
-      if (p.dashing <= 0) {
-        if (tile === T.Pit) {
-          this.events.push({ e: 'fall', x: r1(p.x), y: r1(p.y), who: 'player' });
-          p.x = p.safeX;
-          p.y = p.safeY;
-          p.vx = p.vy = 0;
-          p.invuln = 0;
-          this.damagePlayer(p, 15, 0, 0, 0, true);
-          p.invuln = 40;
-          continue;
-        }
-        if (tile === T.Lava && p.hazT <= 0) {
-          p.hazT = 5;
-          p.hp -= 6;
-          this.events.push({ e: 'burn', x: r1(p.x), y: r1(p.y) });
-          if (p.hp <= 0) this.downPlayer(p);
-        }
-        if (tile === T.Spikes && spikeState(this.tick, Math.floor(p.x / TILE), Math.floor(p.y / TILE)) === 2) {
-          const a = Math.random() * Math.PI * 2;
-          this.damagePlayer(p, 14, Math.cos(a), Math.sin(a), 90);
-        }
-      }
-      if (tile === T.Floor) {
-        p.safeX = p.x;
-        p.safeY = p.y;
-      }
-      if (tile === T.Stairs && this.stairsOpen && !p.down) {
-        this.loadFloor(this.floor + 1);
-        return;
+      if (tile === T.Spikes && spikeState(this.tick, Math.floor(p.x / TILE), Math.floor(p.y / TILE)) === 2) {
+        const a = Math.random() * Math.PI * 2;
+        this.damagePlayer(p, 14, Math.cos(a), Math.sin(a), 90);
       }
     }
+    if (tile === T.Floor) {
+      p.safeX = p.x;
+      p.safeY = p.y;
+    }
+    if (tile === T.Stairs && this.stairsOpen && !p.down) {
+      this.loadFloor(this.floor + 1);
+      return true;
+    }
+    return false;
   }
 
   private updateEnemies() {
@@ -991,7 +1170,7 @@ export class Room {
       if (e.hp <= 0) continue;
 
       for (const p of this.players.values()) {
-        if (p.down) continue;
+        if (p.down || p.net.offline) continue;
         const dx = p.x - e.x;
         const dy = p.y - e.y;
         const d = len(dx, dy);
@@ -1130,23 +1309,14 @@ export class Room {
     const keep: Bullet[] = [];
     outer: for (const b of this.bullets) {
       for (let s = 0; s < 2; s++) {
-        const ox = b.x;
-        const oy = b.y;
-        b.x += (b.vx * DT) / 2;
-        b.y += (b.vy * DT) / 2;
-        if (this.solid(b.x, b.y)) {
-          if (b.bounce > 0) {
-            b.bounce--;
-            if (this.solid(b.x, oy)) b.vx = -b.vx;
-            if (this.solid(ox, b.y)) b.vy = -b.vy;
-            b.x = ox;
-            b.y = oy;
-            b.hit.clear();
-            this.events.push({ e: 'spark', x: r1(ox), y: r1(oy) });
-          } else {
-            this.events.push({ e: 'spark', x: r1(ox), y: r1(oy) });
-            continue outer;
-          }
+        const st = bulletHalfStep(b, this.map);
+        if (st === BOUNCED) {
+          b.hit.clear();
+          b.dirty = true;
+          this.events.push({ e: 'spark', x: r1(b.x), y: r1(b.y), p: b.enemy ? 0 : b.pid });
+        } else if (st === DEAD) {
+          this.events.push({ e: 'spark', x: r1(b.x), y: r1(b.y), p: b.enemy ? 0 : b.pid });
+          continue outer;
         }
         for (const br of this.barrels) {
           if (!b.enemy && br.fuse < 0 && len(br.x - b.x, br.y - b.y) < 7 + b.r) {
@@ -1156,9 +1326,11 @@ export class Room {
           }
         }
         if (!b.enemy) {
+          const seen = this.tick - b.lag;
           for (const e of this.enemies) {
             if (e.hp <= 0 || b.hit.has(e.id)) continue;
-            if (len(e.x - b.x, e.y - b.y) < e.r + b.r) {
+            const [ex, ey] = b.lag > 0 ? this.posAt(e, seen) : [e.x, e.y];
+            if (len(ex - b.x, ey - b.y) < e.r + b.r) {
               const sp = len(b.vx, b.vy) || 1;
               this.damageEnemy(e, b.dmg, b.vx / sp, b.vy / sp, b.knock, b.pid);
               b.hit.add(e.id);
@@ -1168,7 +1340,7 @@ export class Room {
           }
         } else {
           for (const p of this.players.values()) {
-            if (p.down) continue;
+            if (p.down || p.net.offline) continue;
             if (len(p.x - b.x, p.y - b.y) < PLAYER_R + b.r) {
               if (p.dashing > 0) continue;
               const sp = len(b.vx, b.vy) || 1;
@@ -1247,7 +1419,7 @@ export class Room {
   private updateItems() {
     this.items = this.items.filter((it) => {
       for (const p of this.players.values()) {
-        if (p.down || len(p.x - it.x, p.y - it.y) > 11) continue;
+        if (p.down || p.net.offline || len(p.x - it.x, p.y - it.y) > 11) continue;
         if (it.k === 'potion' && p.hp >= p.maxHp) continue;
         this.applyItem(p, it.k);
         this.events.push({ e: 'pickup', x: r1(it.x), y: r1(it.y), k: it.k, p: p.id });
@@ -1260,7 +1432,7 @@ export class Room {
   private updateRevives() {
     for (const p of this.players.values()) {
       if (!p.down) continue;
-      const helper = [...this.players.values()].some((o) => !o.down && len(o.x - p.x, o.y - p.y) < 22);
+      const helper = [...this.players.values()].some((o) => !o.down && !o.net.offline && len(o.x - p.x, o.y - p.y) < 22);
       p.rev = helper ? p.rev + 1 / (TICK_RATE * 2) : Math.max(0, p.rev - 1 / (TICK_RATE * 4));
       if (p.rev >= 1) {
         p.down = false;
@@ -1274,12 +1446,23 @@ export class Room {
   }
 
   // ---------- networking ----------
+  private sendTo(ws: WebSocket, msg: ServerMsg) {
+    if (ws.readyState === 1) ws.send(JSON.stringify(msg));
+  }
+
   send(p: Player, msg: ServerMsg) {
-    if (p.ws.readyState === 1) p.ws.send(JSON.stringify(msg));
+    if (p.net.ws) this.sendTo(p.net.ws, msg);
+  }
+
+  private sendBin(p: Player, bytes: Uint8Array) {
+    const ws = p.net.ws;
+    if (!ws || ws.readyState !== 1) return;
+    this.bytesOut += bytes.length;
+    ws.send(bytes, { binary: true });
   }
 
   broadcast(msg: ServerMsg) {
     const data = JSON.stringify(msg);
-    for (const p of this.players.values()) if (p.ws.readyState === 1) p.ws.send(data);
+    for (const p of this.players.values()) if (p.net.ws?.readyState === 1) p.net.ws.send(data);
   }
 }
