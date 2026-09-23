@@ -215,7 +215,7 @@ export class NetClient {
       const off = world.tick - me.ack;
       this.seqOffset = Number.isNaN(this.seqOffset) || Math.abs(off - this.seqOffset) > 4 ? off : this.seqOffset + (off - this.seqOffset) * 0.1;
     }
-    if (me.buf < 0 && now > this.skipUntil) {
+    if (me.buf < 0 && now > this.skipUntil && now - this.lastNow < 250) {
       // Our inputs are arriving after the server needed them (e.g. after a stall): jump ahead instead of
       // letting the pace controller crawl back while every input is guessed.
       this.pred.seq += -me.buf + Math.round(this.bufTarget);
