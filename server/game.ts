@@ -447,7 +447,10 @@ export class Room {
       n.snapAck = m.ackTick;
     }
     // Start from the oldest redundant copy so the jitter buffer begins non-empty.
-    if (!n.nextSeq) n.nextSeq = m.inputs[0].seq;
+    if (!n.nextSeq || m.inputs[0].seq >= n.nextSeq + 256) {
+      n.nextSeq = m.inputs[0].seq;
+      n.queue.clear();
+    }
     for (const inp of m.inputs) {
       if (inp.seq >= n.nextSeq && inp.seq < n.nextSeq + 256 && !n.queue.has(inp.seq)) n.queue.set(inp.seq, inp);
       else if (n.guessed.delete(inp.seq)) n.carry |= inp.buttons & PRESS_MASK;
