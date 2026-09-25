@@ -9,7 +9,6 @@ export class DebugOverlay {
   private text: HTMLElement;
   private last = 0;
   shown = false;
-  ghost = true;
 
   constructor(private c: NetClient) {
     const q = new URLSearchParams(location.search);
@@ -27,7 +26,6 @@ export class DebugOverlay {
         <label>loss <input data-k="loss" type="number" min="0" max="50" step="1"> %</label>
       </div>
       <div class="nd-btns">
-        <button data-a="ghost">Server ghost: on</button>
         <button data-a="drop">Drop connection</button>
       </div>`;
     document.body.appendChild(this.el);
@@ -47,11 +45,6 @@ export class DebugOverlay {
       };
       inp.onkeydown = (e: KeyboardEvent) => e.stopPropagation();
     }
-    const ghostBtn = this.el.querySelector<HTMLButtonElement>('[data-a=ghost]')!;
-    ghostBtn.onclick = () => {
-      this.ghost = !this.ghost;
-      ghostBtn.textContent = `Server ghost: ${this.ghost ? 'on' : 'off'}`;
-    };
     this.el.querySelector<HTMLButtonElement>('[data-a=drop]')!.onclick = () => c.net.simulateDrop();
 
     const simOn = c.net.sim.lag || c.net.sim.jitter || c.net.sim.loss;
@@ -89,7 +82,7 @@ export class DebugOverlay {
       `inputbuf  ${f(c.bufEma, 2)} (target ${f(c.bufTarget, 1)})  server guessed ${c.starved}  skips ${c.skips}`,
       `correct   ${p.corrections}  last ${f(p.lastErr, 2)} ${p.lastErrKey}  snaps ${p.snaps}  replayed ${p.replayed}`,
       `sizes     <1px ${p.errBuckets[0]}  1-4 ${p.errBuckets[1]}  4-16 ${p.errBuckets[2]}  >16 ${p.errBuckets[3]}   blending ${f(Math.hypot(p.errX, p.errY), 2)} px`,
-      `hits      agreed ${c.hitMatch.both}  missed ${c.hitMatch.predictedOnly}  overkill ${c.hitMatch.overkill}  server-only ${c.hitMatch.serverOnly}`,
+      `self      par ${p.state?.par ?? '–'} mode ${p.state?.pm ?? '–'}  rope ${p.state?.rm ?? '–'}  heavy ${p.state?.heavy ?? '–'}`,
       `snapshots ${f(st.snapHz, 0)}/s  in ${f(st.kbIn, 2)} KB/s  out ${f(st.kbOut, 2)} KB/s`,
       `drops     stale ${c.staleDrops}  no-baseline ${c.baseMisses}  extrap frames ${tl.extrapolatedFrames}`,
     ];

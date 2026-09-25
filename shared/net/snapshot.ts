@@ -1,13 +1,12 @@
 import type { GameEvent, Phase } from '../protocol.ts';
 import type { PlayerInput } from '../sim/input.ts';
-import { MOVE_KEYS, newMoveState, type MoveState } from '../sim/movement.ts';
+import { MOVE_KEYS, newMoveState, ogreBody, type MoveState, type SimBody, type SimRope } from '../sim/player.ts';
 import { BinReader, BinWriter } from './bin.ts';
 
 /*
  * Wire format for the unreliable channel. Snapshots are binary, quantized and delta-compressed
- * per field against the newest snapshot the client has acknowledged; anything the client can
- * derive (bullet flight from a (tick, pos, vel) anchor) is sent once and only resent on change.
- * Everything here tolerates loss and reordering so it can move to datagrams later.
+ * per field against the newest snapshot the client has acknowledged. Everything here tolerates
+ * loss and reordering.
  */
 
 export const MSG_SNAP = 1;
@@ -17,34 +16,28 @@ export const MSG_PING = 2;
 
 type Field = 'u8' | 'u16' | 'i16' | 'u32' | 'uv';
 
-export const P = { x: 0, y: 1, aim: 2, hp: 3, maxHp: 4, flags: 5, rev: 6, lvl: 7, xp: 8, xpNext: 9, kills: 10, pending: 11, c: 12, k: 13, mode: 14, draw: 15 } as const;
-export const PF = { down: 1, block: 2, inv: 4, off: 8 } as const;
-export const BF = { enemy: 1, arrow: 16 } as const;
-export const E = { k: 0, x: 1, y: 2, hp: 3, maxHp: 4, a: 5, s: 6 } as const;
-export const B = { t0: 0, x: 1, y: 2, vx: 3, vy: 4, flags: 5, o: 6, sq: 7, i: 8 } as const;
-export const X = { x: 0, y: 1 } as const;
-export const I = { k: 0, x: 1, y: 2 } as const;
-export const TR = { x: 0, y: 1, c: 2 } as const;
+/** Player row. Positions are 1/8 px. */
+export const P = { x: 0, y: 1, flags: 2, par: 3, pm: 4, ox: 5, oy: 6, rax: 7, ray: 8, c: 9, k: 10, aim: 11, vx: 12, held: 13 } as const;
+export const PF = { heavy: 1, gnd: 2, pound: 4, rope: 8, left: 16, stun: 32, off: 64 } as const;
+/** Level object row (lifts, gates, hooks, switches...). */
+export const BD = { k: 0, x: 1, y: 2, w: 3, h: 4, s: 5 } as const;
+export const RP = { ax: 0, ay: 1, len: 2, o: 3 } as const;
+export const AR = { x: 0, y: 1, a: 2, stuck: 3 } as const;
 
 const SCHEMAS: Field[][] = [
-  ['u16', 'u16', 'u8', 'uv', 'uv', 'u8', 'u8', 'u8', 'uv', 'uv', 'uv', 'u8', 'u8', 'u8', 'u8', 'u8'],
-  ['u8', 'u16', 'u16', 'uv', 'uv', 'u8', 'u8'],
-  ['u32', 'u16', 'u16', 'i16', 'i16', 'u8', 'uv', 'uv', 'u8'],
-  ['u16', 'u16'],
-  ['u8', 'u16', 'u16'],
-  ['u16', 'u16', 'u8'],
+  ['u16', 'u16', 'u8', 'uv', 'u8', 'i16', 'i16', 'u16', 'u16', 'u8', 'u8', 'u8', 'i16', 'uv'],
+  ['u8', 'u16', 'u16', 'u16', 'u16', 'u8'],
+  ['u16', 'u16', 'u16', 'uv'],
+  ['u16', 'u16', 'u8', 'u8'],
 ];
-export const TABLES = { players: 0, enemies: 1, bullets: 2, barrels: 3, items: 4, traps: 5 } as const;
+export const TABLES = { players: 0, bodies: 1, ropes: 2, arrows: 3 } as const;
 
-export const ENEMY_KINDS = ['grunt', 'archer', 'brute', 'boss'] as const;
-export const ITEM_KINDS = ['potion', 'sigil', 'ricochet', 'heavy', 'fang', 'boots', 'charm'] as const;
-export const CHAR_WIRE = ['archer', 'knight'] as const;
-/** Enemy state byte: low bits are the AI state, this bit marks a rooted enemy. */
-export const ES_ROOTED = 8;
-const PHASES: Phase[] = ['play', 'over', 'win'];
+export const CHAR_WIRE = ['ogre', 'archer'] as const;
+const PHASES: Phase[] = ['play', 'win'];
 
 export const qpos = (v: number) => Math.max(0, Math.min(65535, Math.round(v * 8)));
 export const dpos = (q: number) => q / 8;
+export const qoff = (v: number) => Math.round(v * 8);
 const TAU = Math.PI * 2;
 export const qang8 = (a: number) => Math.round((((a % TAU) + TAU) % TAU) * (256 / TAU)) & 0xff;
 export const dang8 = (q: number) => (q * TAU) / 256;
@@ -56,9 +49,6 @@ export interface World {
   tick: number;
   ep: number;
   phase: Phase;
-  floor: number;
-  left: number;
-  stairs: boolean;
   tables: Table[];
 }
 
@@ -113,15 +103,12 @@ export function encodeSnapshot(cur: World, base: World | null, me: Personal): Ui
   w.u32(base ? base.tick : 0);
   w.u16(cur.ep);
   w.u8(PHASES.indexOf(cur.phase));
-  w.u8(cur.floor);
-  w.uv(cur.left);
-  w.u8(cur.stairs ? 1 : 0);
 
   w.u32(me.ack);
   w.i8(Math.max(-128, Math.min(127, me.buf)));
   w.u16(me.starved);
   w.u8(me.self ? 1 : 0);
-  if (me.self) for (const k of MOVE_KEYS) w.f32(Number(me.self[k]));
+  if (me.self) for (const k of MOVE_KEYS) w.f64(me.self[k]);
 
   for (let t = 0; t < SCHEMAS.length; t++) {
     const schema = SCHEMAS[t];
@@ -174,9 +161,6 @@ export function decodeSnapshot(buf: Uint8Array, baseline: (tick: number) => Worl
   if (baseTick && !base) return null;
   const ep = r.u16();
   const phase = PHASES[r.u8()] ?? 'play';
-  const floor = r.u8();
-  const left = r.uv();
-  const stairs = r.u8() === 1;
 
   const ack = r.u32();
   const bufDepth = r.i8();
@@ -184,9 +168,7 @@ export function decodeSnapshot(buf: Uint8Array, baseline: (tick: number) => Worl
   let self: MoveState | null = null;
   if (r.u8()) {
     self = newMoveState();
-    const s = self as unknown as Record<string, number | boolean>;
-    for (const k of MOVE_KEYS) s[k] = r.f32();
-    self.down = !!s.down;
+    for (const k of MOVE_KEYS) self[k] = r.f64();
   }
 
   const tables: Table[] = [];
@@ -215,7 +197,7 @@ export function decodeSnapshot(buf: Uint8Array, baseline: (tick: number) => Worl
   const evBytes = r.bytes();
   const events = evBytes.length ? (JSON.parse(dec.decode(evBytes)) as [number, GameEvent[]][]) : [];
   return {
-    world: { tick, ep, phase, floor, left, stairs, tables },
+    world: { tick, ep, phase, tables },
     me: { ack, buf: bufDepth, starved, self, events },
     baseTick,
   };
@@ -231,7 +213,7 @@ export function encodeInputs(ackTick: number, inputs: PlayerInput[]): Uint8Array
     w.i8(i.mx);
     w.i8(i.my);
     w.u16(i.aim);
-    w.u8(i.buttons);
+    w.u16(i.buttons);
     w.u32(i.vt8);
   }
   return w.done();
@@ -245,7 +227,8 @@ export function decodeInputs(buf: Uint8Array): { ackTick: number; inputs: Player
     const n = r.u8();
     const first = r.u32();
     const inputs: PlayerInput[] = [];
-    for (let k = 0; k < n; k++) inputs.push({ seq: first + k, mx: r.i8(), my: r.i8(), aim: r.u16(), buttons: r.u8(), vt8: r.u32() });
+    for (let k = 0; k < n; k++) inputs.push({ seq: first + k, mx: r.i8(), my: r.i8(), aim: r.u16(), buttons: r.u16(), vt8: r.u32() });
+    if (r.left < 0) return null;
     return { ackTick, inputs };
   } catch {
     return null;
@@ -271,4 +254,16 @@ export function decodePong(buf: Uint8Array): { t: number; tick: number } {
   const r = new BinReader(buf);
   r.u8();
   return { t: r.f64(), tick: r.u32() };
+}
+
+/** Collision bodies as they appear in a snapshot (level objects plus ogre heads). */
+export function simBodies(w: World): SimBody[] {
+  const out: SimBody[] = [];
+  for (const [id, r] of w.tables[TABLES.bodies]) out.push({ id, k: r[BD.k], x: dpos(r[BD.x]), y: dpos(r[BD.y]), w: dpos(r[BD.w]), h: dpos(r[BD.h]), s: r[BD.s] });
+  for (const [id, r] of w.tables[TABLES.players]) if (CHAR_WIRE[r[P.k]] === 'ogre' && !(r[P.flags] & PF.off)) out.push(ogreBody(id, dpos(r[P.x]), dpos(r[P.y])));
+  return out;
+}
+
+export function simRopes(w: World): SimRope[] {
+  return [...w.tables[TABLES.ropes]].map(([id, r]) => ({ id, ax: dpos(r[RP.ax]), ay: dpos(r[RP.ay]), len: dpos(r[RP.len]) }));
 }

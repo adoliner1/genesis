@@ -3,29 +3,28 @@ import './style.css';
 import { NetClient } from './net/client';
 import { Hud } from './hud';
 import { GameScene } from './scene';
-import { initAudio } from './audio';
 import { DebugOverlay } from './debug';
-import { drawPortrait } from './sprites';
-import { CHAR_INFO, CHAR_KINDS, PLAYER_COLORS, type CharKind } from '../shared/protocol';
+import { Input } from './input';
+import { CHAR_INFO, CHAR_KINDS, type CharKind } from '../shared/protocol';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const nameInput = $<HTMLInputElement>('name');
 const codeInput = $<HTMLInputElement>('code');
 const err = $('lobby-error');
-const SESSION = 'boneyard-session';
+const SESSION = 'genesis-session';
 
 interface Session {
   code: string;
   token: string;
 }
 
-nameInput.value = localStorage.getItem('boneyard-name') ?? '';
+nameInput.value = localStorage.getItem('genesis-name') ?? '';
 const params = new URLSearchParams(location.search);
 const roomParam = params.get('room')?.toUpperCase() ?? null;
 
 const isChar = (v: unknown): v is CharKind => CHAR_KINDS.includes(v as CharKind);
 const charParam = params.get('char');
-let char: CharKind = isChar(charParam) ? charParam : isChar(localStorage.getItem('boneyard-char')) ? (localStorage.getItem('boneyard-char') as CharKind) : 'archer';
+let char: CharKind = isChar(charParam) ? charParam : isChar(localStorage.getItem('genesis-char')) ? (localStorage.getItem('genesis-char') as CharKind) : 'archer';
 
 function renderPick() {
   const pick = $('pick');
@@ -34,29 +33,17 @@ function renderPick() {
     const info = CHAR_INFO[k];
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = `pick-card${k === char ? ' on' : ''}`;
+    b.className = `pick-card ${k}${k === char ? ' on' : ''}`;
     b.setAttribute('role', 'radio');
     b.setAttribute('aria-checked', String(k === char));
-    b.dataset.char = k;
-    const cv = document.createElement('canvas');
-    drawPortrait(cv, k, PLAYER_COLORS[k === 'knight' ? 2 : 0], 4);
-    b.appendChild(cv);
-    const txt = document.createElement('div');
-    txt.innerHTML = `<b>${info.name}</b><small>${info.role}</small><em>${info.weight}</em>`;
-    b.appendChild(txt);
+    b.innerHTML = `<span class="portrait"></span><b>${info.name}</b><small>${info.blurb}</small>`;
     b.onclick = () => {
       char = k;
-      localStorage.setItem('boneyard-char', k);
+      localStorage.setItem('genesis-char', k);
       renderPick();
     };
     pick.appendChild(b);
   }
-  const info = CHAR_INFO[char];
-  $('controls').innerHTML =
-    `<li class="blurb">${info.blurb}</li><li><b>WASD</b> move · <b>Mouse</b> aim</li>` +
-    info.controls.map(([k, d]) => `<li><b>${k}</b> ${d}</li>`).join('') +
-    '<li><b>1 2 3</b> pick level-up perk</li>' +
-    '<li><b>Middle-drag / screen edge</b> pan the camera · <b>Tab</b> watch teammates · <b>C</b> snap back</li>';
 }
 renderPick();
 if (roomParam) {
@@ -64,7 +51,7 @@ if (roomParam) {
   $('join').classList.add('primary');
   $('create').classList.remove('primary');
   err.style.color = '#ffd23f';
-  err.textContent = `Invite for room ${roomParam} — enter a name and hit Join.`;
+  err.textContent = `Invite for room ${roomParam}: pick a character and hit Join.`;
 }
 
 const loadSession = (): Session | null => {
@@ -90,9 +77,8 @@ type First = { t: 'create' } | { t: 'join'; code: string } | { t: 'rejoin'; code
 function connect(first: First) {
   if (started || busy) return;
   busy = true;
-  const name = nameInput.value.trim() || `Crawler${Math.floor(Math.random() * 90 + 10)}`;
-  localStorage.setItem('boneyard-name', name);
-  initAudio();
+  const name = nameInput.value.trim() || `Player${Math.floor(Math.random() * 90 + 10)}`;
+  localStorage.setItem('genesis-name', name);
   err.style.color = '';
   err.textContent = first.t === 'rejoin' ? `Rejoining room ${first.code}…` : 'Connecting…';
   const client = new NetClient();
@@ -132,24 +118,32 @@ function connect(first: First) {
       debug.el.remove();
       return;
     }
+    if (m.t === 'meta' && started) return;
     if (m.t !== 'joined') return;
     session = { code: m.code, token: m.token };
     sessionStorage.setItem(SESSION, JSON.stringify(session));
     if (started) return;
     started = true;
     $('lobby').hidden = true;
-    const hud = new Hud(m.code);
-    const game = new Phaser.Game({
-      type: Phaser.AUTO,
-      parent: 'game',
-      pixelArt: true,
-      roundPixels: true,
-      backgroundColor: '#0d0810',
-      scale: { mode: Phaser.Scale.RESIZE, width: innerWidth, height: innerHeight },
-      scene: [],
-    });
-    game.scene.add('game', GameScene, true, { client, hud, debug });
-    Object.assign(window, { __game: game, __net: client });
+    const myChar = first.t === 'rejoin' ? null : char;
+    const boot = () => {
+      const kind = myChar ?? client.meta.get(client.myId)?.char ?? char;
+      const hud = new Hud(m.code, kind);
+      const input = new Input($('game'));
+      const game = new Phaser.Game({
+        type: Phaser.AUTO,
+        parent: 'game',
+        pixelArt: true,
+        transparent: true,
+        scale: { mode: Phaser.Scale.RESIZE, width: innerWidth, height: innerHeight },
+        scene: [],
+      });
+      game.scene.add('game', GameScene, true, { client, hud, debug, input });
+      Object.assign(window, { __game: game, __net: client });
+    };
+    // On a rejoin our character arrives with the meta message right after "joined".
+    if (myChar) boot();
+    else setTimeout(boot, 50);
   };
 }
 
@@ -171,3 +165,5 @@ nameInput.addEventListener('keydown', (e) => e.key === 'Enter' && (roomParam ? $
 
 const saved = loadSession();
 if (saved && (!roomParam || roomParam === saved.code)) connect({ t: 'rejoin', ...saved });
+// ?go=1 skips the lobby (create, or join with ?room=) for quick multi-tab testing.
+else if (params.has('go')) connect(roomParam ? { t: 'join', code: roomParam } : { t: 'create' });

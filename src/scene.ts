@@ -1,114 +1,107 @@
 import Phaser from 'phaser';
-import {
-  ENEMY_R,
-  PLAYER_COLORS,
-  itemInfo,
-  T,
-  TILE,
-  spikeState,
-  type FloorMsg,
-  type GameEvent,
-  type CharKind,
-  type PlayerSnap,
-  type WorldView,
-} from '../shared/protocol';
-import { parseTiles } from '../shared/sim/map';
-import { MODE, type MoveState, type StepResult } from '../shared/sim/movement';
-import { trapSpot } from '../shared/sim/kits/archer';
-import { SHIELD_ARC } from '../shared/sim/kits/knight';
-import { makeTextures, renderMap } from './sprites';
-import { Fx } from './fx';
-import { sfx } from './audio';
-import { Autopilot, type BotOutput } from './autopilot';
-import type { NetClient, RawInput, RenderBullet } from './net/client';
+import { PLAYER_COLORS, TILE, type GameEvent, type LevelMsg } from '../shared/protocol';
+import { T, isSolid, tileAt, type TileMap } from '../shared/sim/level';
+import { BK, GRAV, KIT, PM, attachedPos, handOf, ogreBody, overlapsSolid, ropeCast, type MoveState, type SimBody, type StepResult } from '../shared/sim/player';
+import type { NetClient, PlayerView, WorldView } from './net/client';
+import type { Input } from './input';
 import type { Hud } from './hud';
 import type { DebugOverlay } from './debug';
-import { FogLayer } from './fog';
-import { CameraRig } from './camera';
-import type { Eye } from '../shared/sim/vision';
-
-interface View {
-  spr: Phaser.GameObjects.Image;
-  x: number;
-  y: number;
-  spd: number;
-  flash: number;
-  kind: string;
-  extra?: Phaser.GameObjects.GameObject[];
-  vx?: number;
-  vy?: number;
-  /** Fade-in on first appearance so things arriving out of the fog don't pop. */
-  fade: number;
-  /** Props (barrels, items) stay drawn as a last-known memory once they leave sight. */
-  seen?: boolean;
-  ghost?: boolean;
-  /** Seconds since the server stopped sending it; it fades out instead of vanishing. */
-  gone?: number;
-  /** Players: smoothed on-screen velocity, and when the last slash / bash started. */
-  mvx?: number;
-  mvy?: number;
-  swingAt?: number;
-  swingArc?: number;
-  swingDir?: number;
-  bashAt?: number;
-}
-
-const LINGER = 0.15;
 
 export interface Boot {
   client: NetClient;
   hud: Hud;
   debug: DebugOverlay;
+  input: Input;
 }
 
 const hex = (s: string) => parseInt(s.slice(1), 16);
+const COL = {
+  hillFar: 0x2b3a5c,
+  hillNear: 0x24304d,
+  rock: 0x3b3450,
+  rockDark: 0x2c2640,
+  rockLight: 0x544a70,
+  grass: 0x7cc46a,
+  grassDark: 0x5a9c4c,
+  wood: 0x9a6334,
+  woodDark: 0x6b4122,
+  woodLight: 0xc08450,
+  plank: 0xc98f55,
+  spike: 0xe6e3f0,
+  rope: 0xe0c48a,
+  iron: 0x8a8fa3,
+  ironDark: 0x4f5366,
+  gold: 0xffd23f,
+  skin: 0xf2d0a4,
+  ogre: 0x86b35e,
+  ogreDark: 0x5f8a40,
+  ogreHeavy: 0x6d7385,
+  ogreHeavyDark: 0x4a4f60,
+  white: 0xffffff,
+  ink: 0x14101c,
+};
+
+interface Fx {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  max: number;
+  size: number;
+  color: number;
+  g: number;
+}
+
+interface Ring {
+  x: number;
+  y: number;
+  r: number;
+  life: number;
+  max: number;
+  color: number;
+}
+
+/** Per-player cosmetic state: walk cycle and squash. */
+interface Anim {
+  lastX: number;
+  lastY: number;
+  vy: number;
+  walk: number;
+  squash: number;
+  seen: number;
+}
+
+/** Cosmetic Verlet chain for a rope hanging free. */
+interface RopeSim {
+  pts: { x: number; y: number; px: number; py: number }[];
+  seg: number;
+}
 
 export class GameScene extends Phaser.Scene {
   boot!: Boot;
-  fx!: Fx;
-  map: { w: number; h: number; tiles: Uint8Array; boss: boolean } | null = null;
-  mapImg: Phaser.GameObjects.Image | null = null;
-  mapKey = '';
-  decals!: Phaser.GameObjects.RenderTexture;
-  spikes: { img: Phaser.GameObjects.Image; tx: number; ty: number; st: number }[] = [];
-  lava: { img: Phaser.GameObjects.Image; tx: number; ty: number }[] = [];
-  lavaGlows: Phaser.GameObjects.Image[] = [];
-  grate: Phaser.GameObjects.Image | null = null;
-  stairsGlow: Phaser.GameObjects.Image | null = null;
-  stairsPos = { x: 0, y: 0 };
-  players = new Map<number, View>();
-  enemies = new Map<number, View>();
-  bullets = new Map<number, View>();
-  barrels = new Map<number, View>();
-  items = new Map<number, View>();
-  traps = new Map<number, View>();
-  localTraps: { x: number; y: number; until: number; img: Phaser.GameObjects.Image }[] = [];
-  overlay!: Phaser.GameObjects.Graphics;
-  cross!: Phaser.GameObjects.Image;
-  arrows: Phaser.GameObjects.Image[] = [];
-  keys!: Record<string, Phaser.Input.Keyboard.Key>;
-  fog!: FogLayer;
-  rig!: CameraRig;
-  eyes: Eye[] = [];
-  camTag = document.getElementById('camtag');
-  camTagKey = '';
-  trauma = 0;
-  kickX = 0;
-  kickY = 0;
-  zoomPunch = 0;
-  baseZoom = 3;
-  hitstopUntil = 0;
-  pressA = false;
-  pressB = false;
-  pressMove = false;
-  wasFull = false;
-  aim = 0;
-  lavaFrame = 0;
-  floorCount = 0;
-  stairsWasOpen = false;
-  lastLatest: WorldView | null = null;
-  bot: Autopilot | null = null;
-  auto: BotOutput | null = null;
+  hills!: Phaser.GameObjects.Graphics;
+  tilesG!: Phaser.GameObjects.Graphics;
+  back!: Phaser.GameObjects.Graphics;
+  dyn!: Phaser.GameObjects.Graphics;
+  top!: Phaser.GameObjects.Graphics;
+  map: TileMap | null = null;
+  signs: Phaser.GameObjects.Text[] = [];
+  names = new Map<number, Phaser.GameObjects.Text>();
+  fx: Fx[] = [];
+  rings: Ring[] = [];
+  poses = new Map<number, Anim>();
+  ropeSims = new Map<number, RopeSim>();
+  ropeHeld = new Map<number, [number, number]>();
+  shake = 0;
+  zoom = 3;
+  camX = NaN;
+  camY = NaN;
+  restartSent = false;
+  /** ?dev=1: number keys warp to checkpoints. */
+  dev = new URLSearchParams(location.search).has('dev');
+  view: WorldView | null = null;
+  me: PlayerView | null = null;
 
   constructor() {
     super('game');
@@ -118,1021 +111,819 @@ export class GameScene extends Phaser.Scene {
     this.boot = data;
   }
 
-  get client() {
-    return this.boot.client;
-  }
-
   create() {
-    makeTextures(this);
-    this.overlay = this.add.graphics().setDepth(950);
-    this.cross = this.add.image(0, 0, 'cross').setDepth(1000);
-    this.input.mouse?.disableContextMenu();
-    const kb = this.input.keyboard!;
-    this.keys = kb.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,SHIFT,F,ONE,TWO,THREE') as Record<string, Phaser.Input.Keyboard.Key>;
-    const latch = (f: () => void) => (e: KeyboardEvent) => !e.repeat && f();
-    kb.on('keydown-SPACE', latch(() => (this.pressMove = true)));
-    kb.on('keydown-SHIFT', latch(() => (this.pressMove = true)));
-    kb.on('keydown-F', latch(() => (this.pressB = true)));
-    (['ONE', 'TWO', 'THREE'] as const).forEach((k, i) => kb.on(`keydown-${k}`, () => this.choose(i)));
-    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      if (p.rightButtonDown()) this.pressB = true;
-      if (p.leftButtonDown()) this.pressA = true;
-    });
-    this.boot.hud.onChoose = (i) => this.choose(i);
-    this.boot.hud.onRestart = () => this.client.net.sendJson({ t: 'restart' });
-
-    this.fog = new FogLayer(this, this.client.fog);
-    this.rig = new CameraRig(this, () =>
-      [...this.players.keys()].filter((id) => id !== this.client.myId).sort((a, b) => a - b),
-    );
+    const { client } = this.boot;
     const q = new URLSearchParams(location.search);
-    this.rig.edgePan = q.get('edgepan') !== '0';
-    if (q.has('bot')) this.bot = new Autopilot(() => this.map, (i) => this.choose(i), () => this.client.fog.explored);
-    this.decals = this.add.renderTexture(0, 0, 16, 16).setOrigin(0).setDepth(2);
-    this.fx = new Fx(this, this.decals);
-    this.fx.solid = (x, y) => {
-      const m = this.map;
-      if (!m) return false;
-      const tx = Math.floor(x / TILE);
-      const ty = Math.floor(y / TILE);
-      if (tx < 0 || ty < 0 || tx >= m.w || ty >= m.h) return true;
-      const t = m.tiles[ty * m.w + tx];
-      return t === T.Wall || t === T.Pit || t === T.Lava;
-    };
-    this.client.hooks = {
-      input: () => this.sampleInput(),
+    this.zoom = Number(q.get('zoom')) || Math.max(2, Math.min(4, Math.round(innerHeight / 250)));
+    this.hills = this.add.graphics();
+    this.tilesG = this.add.graphics();
+    this.back = this.add.graphics();
+    this.dyn = this.add.graphics();
+    this.top = this.add.graphics();
+    const cam = this.cameras.main;
+    cam.setZoom(this.zoom);
+    cam.setRoundPixels(false);
+
+    client.hooks = {
+      input: () => this.readInput(),
       predicted: (res, s) => this.onPredicted(res, s),
-      parried: (x, y, deflected) => this.onParried(x, y, deflected),
-      impact: (x, y, what, id) => this.onImpact(x, y, what, id),
       event: (e) => this.onEvent(e),
-      floor: (f) => this.loadFloor(f),
+      level: (l) => this.loadLevel(l),
     };
-    if (this.client.floor) this.loadFloor(this.client.floor);
-    this.scale.on('resize', () => this.fitZoom());
-    this.fitZoom();
-    this.events.once('shutdown', () => (this.client.hooks = null));
+    if (client.level) this.loadLevel(client.level);
   }
 
-  fitZoom() {
-    const forced = Number(new URLSearchParams(location.search).get('zoom'));
-    this.baseZoom = forced > 0 ? forced : Math.max(2, Math.floor(Math.min(this.scale.width / 360, this.scale.height / 230)));
-  }
-
-  choose(i: number) {
-    if (this.boot.hud.choices) this.client.net.sendJson({ t: 'choose', idx: i });
-  }
-
-  /** Called by the net client once per fixed tick. */
-  sampleInput(): RawInput {
-    const aPress = this.pressA;
-    const bPress = this.pressB;
-    const movePress = this.pressMove;
-    this.pressA = this.pressB = this.pressMove = false;
-    const me = this.client.pred.state;
-    const alive = !!me && !me.down;
-    if (this.auto) return { ...this.auto, aPress: aPress && alive, bPress: bPress && alive, movePress };
-    const k = this.keys;
-    const pointer = this.input.activePointer;
-    return {
-      mx: (k.D.isDown || k.RIGHT.isDown ? 1 : 0) - (k.A.isDown || k.LEFT.isDown ? 1 : 0),
-      my: (k.S.isDown || k.DOWN.isDown ? 1 : 0) - (k.W.isDown || k.UP.isDown ? 1 : 0),
-      aim: this.aim,
-      a: pointer.leftButtonDown() && pointer.isDown && alive,
-      aPress: aPress && alive,
-      b: (pointer.rightButtonDown() || k.F.isDown) && alive,
-      bPress: bPress && alive,
-      move: k.SHIFT.isDown || k.SPACE.isDown,
-      movePress,
-    };
-  }
-
-  loadFloor(f: FloorMsg) {
-    const tiles = parseTiles(f.tiles);
-    this.map = { w: f.w, h: f.h, tiles, boss: f.boss };
-    for (const t of this.localTraps) t.img.destroy();
-    this.localTraps = [];
-    for (const m of [this.enemies, this.bullets, this.barrels, this.items, this.traps]) {
-      for (const v of m.values()) this.destroyView(v);
-      m.clear();
+  /** Background hills; moved each frame for parallax (see updateCamera). */
+  private drawHills(mapW: number) {
+    const g = this.hills;
+    g.clear();
+    const base = 150;
+    const span = mapW + 600;
+    g.fillStyle(COL.hillFar, 1);
+    for (let x = -200; x < span; x += 60) {
+      const hgt = 30 + ((x * 37) % 45);
+      g.fillTriangle(x - 70, base, x, base - hgt, x + 70, base);
     }
-    this.mapImg?.destroy();
-    if (this.mapKey) this.textures.remove(this.mapKey);
-    this.mapKey = `map${++this.floorCount}`;
-    renderMap(this, this.mapKey, f.w, f.h, tiles, f.seed, f.boss);
-    this.mapImg = this.add.image(0, 0, this.mapKey).setOrigin(0).setDepth(0);
-    this.decals?.destroy();
-    this.decals = this.add.renderTexture(0, 0, f.w * TILE, f.h * TILE).setOrigin(0).setDepth(2);
-    this.fx.decals = this.decals;
-    this.fx.parts = [];
-    for (const s of this.spikes) s.img.destroy();
-    for (const l of this.lava) l.img.destroy();
-    for (const g of this.lavaGlows) g.destroy();
-    this.spikes = [];
-    this.lava = [];
-    this.lavaGlows = [];
-    this.grate?.destroy();
-    this.stairsGlow?.destroy();
-    this.grate = this.stairsGlow = null;
-    let sx = -1;
-    let sy = -1;
-    for (let ty = 0; ty < f.h; ty++)
-      for (let tx = 0; tx < f.w; tx++) {
-        const t = tiles[ty * f.w + tx];
+    g.fillRect(-200, base, span + 200, 1200);
+    g.fillStyle(COL.hillNear, 1);
+    for (let x = -200; x < span; x += 45) {
+      const hgt = 14 + ((x * 53) % 24);
+      g.fillEllipse(x, base + 30, 90, hgt * 2);
+    }
+    g.fillRect(-200, base + 30, span + 200, 1200);
+  }
+
+  // ---------- level ----------
+
+  private loadLevel(l: LevelMsg) {
+    this.map = this.boot.client.map;
+    const map = this.map!;
+    this.drawTiles(map);
+    this.drawHills(map.w * TILE);
+    for (const s of this.signs) s.destroy();
+    this.signs = l.signs.map((s) =>
+      this.add
+        .text(s.x, s.y, s.text, { fontFamily: 'ui-monospace, Menlo, monospace', fontSize: '6px', color: '#f4ecdf', align: 'left', lineSpacing: 1, resolution: this.zoom * devicePixelRatio * 2 })
+        .setAlpha(0.8)
+        .setDepth(1),
+    );
+    this.cameras.main.setBounds(0, 0, map.w * TILE, map.h * TILE);
+    this.ropeSims.clear();
+    this.fx = [];
+    this.rings = [];
+    this.camX = NaN;
+    this.boot.hud.level(l.name);
+  }
+
+  private drawTiles(m: TileMap) {
+    const g = this.tilesG;
+    g.clear();
+    const solidAt = (x: number, y: number) => isSolid(tileAt(m, x, y));
+    for (let ty = 0; ty < m.h; ty++)
+      for (let tx = 0; tx < m.w; tx++) {
+        const t = m.tiles[ty * m.w + tx];
         const x = tx * TILE;
         const y = ty * TILE;
-        if (t === T.Spikes) this.spikes.push({ img: this.add.image(x, y, 'spk0').setOrigin(0).setDepth(1), tx, ty, st: 0 });
-        else if (t === T.Lava) {
-          this.lava.push({ img: this.add.image(x, y, 'lava0').setOrigin(0).setDepth(1), tx, ty });
-          if ((tx + ty) % 2 === 0)
-            this.lavaGlows.push(
-              this.add
-                .image(x + 8, y + 8, 'glow')
-                .setTint(0xff6a1f)
-                .setAlpha(0.35)
-                .setScale(1.2)
-                .setBlendMode(Phaser.BlendModes.ADD)
-                .setDepth(3),
-            );
-        } else if (t === T.Stairs && sx < 0) {
-          sx = tx;
-          sy = ty;
+        if (t === T.Solid) {
+          g.fillStyle(COL.rock, 1);
+          g.fillRect(x, y, TILE, TILE);
+          // Speckles for texture.
+          g.fillStyle(COL.rockDark, 1);
+          const h = (tx * 7 + ty * 13) % 5;
+          g.fillRect(x + 3 + h, y + 5 + ((h * 3) % 6), 2, 2);
+          g.fillRect(x + 10 - h, y + 11 - (h % 3), 2, 1);
+          if (!solidAt(tx, ty - 1)) {
+            g.fillStyle(COL.grassDark, 1);
+            g.fillRect(x, y, TILE, 4);
+            g.fillStyle(COL.grass, 1);
+            g.fillRect(x, y, TILE, 2);
+            if ((tx + ty) % 3 === 0) g.fillRect(x + 4, y - 2, 1, 2);
+            if ((tx * 5) % 4 === 1) g.fillRect(x + 11, y - 1, 1, 1);
+          }
+          if (!solidAt(tx, ty + 1)) {
+            g.fillStyle(COL.rockDark, 1);
+            g.fillRect(x, y + TILE - 2, TILE, 2);
+          }
+          if (!solidAt(tx - 1, ty)) {
+            g.fillStyle(COL.rockLight, 1);
+            g.fillRect(x, y, 1, TILE);
+          }
+          if (!solidAt(tx + 1, ty)) {
+            g.fillStyle(COL.rockDark, 1);
+            g.fillRect(x + TILE - 1, y, 1, TILE);
+          }
+        } else if (t === T.Wood) {
+          g.fillStyle(COL.wood, 1);
+          g.fillRect(x, y, TILE, TILE);
+          g.fillStyle(COL.woodDark, 1);
+          g.fillRect(x, y + 4, TILE, 1);
+          g.fillRect(x, y + 10, TILE, 1);
+          g.fillRect(x + ((tx * 5) % 12), y + 1, 1, 3);
+          g.fillStyle(COL.woodLight, 1);
+          g.fillRect(x, y + TILE - 2, TILE, 2);
+          g.fillStyle(COL.iron, 1);
+          g.fillRect(x + 2, y + 7, 1, 1);
+          g.fillRect(x + 13, y + 7, 1, 1);
+        } else if (t === T.OneWay) {
+          g.fillStyle(COL.woodDark, 1);
+          g.fillRect(x, y, TILE, 5);
+          g.fillStyle(COL.plank, 1);
+          g.fillRect(x, y, TILE, 3);
+          g.fillStyle(COL.woodDark, 1);
+          g.fillRect(x + 2, y + 5, 1, 4);
+          g.fillRect(x + 13, y + 5, 1, 4);
+        } else if (t === T.Spikes) {
+          g.fillStyle(COL.rockDark, 1);
+          g.fillRect(x, y + TILE - 3, TILE, 3);
+          g.fillStyle(COL.spike, 1);
+          for (let i = 0; i < 4; i++) g.fillTriangle(x + i * 4, y + TILE - 3, x + i * 4 + 2, y + 6, x + i * 4 + 4, y + TILE - 3);
         }
       }
-    if (sx >= 0) {
-      this.stairsPos = { x: (sx + 1) * TILE, y: (sy + 1) * TILE };
-      this.grate = this.add.image(sx * TILE, sy * TILE, 'grate').setOrigin(0).setDepth(3);
-      this.stairsGlow = this.add
-        .image(this.stairsPos.x, this.stairsPos.y, 'glow')
-        .setTint(0xffd23f)
-        .setBlendMode(Phaser.BlendModes.ADD)
-        .setDepth(4)
-        .setScale(1.5)
-        .setVisible(false);
+  }
+
+  // ---------- input ----------
+
+  private pointerWorld(): [number, number] {
+    const p = this.cameras.main.getWorldPoint(this.boot.input.sx, this.boot.input.sy);
+    return [p.x, p.y];
+  }
+
+  private readInput() {
+    const { input, client } = this.boot;
+    const s = input.sample();
+    const st = client.pred.state;
+    let aim = 0;
+    if (st) {
+      const [hx, hy] = this.me ? [this.me.x, this.me.y - KIT[this.me.char].h + 3] : handOf(client.pred.char, st);
+      const [wx, wy] = this.pointerWorld();
+      aim = Math.atan2(wy - hy, wx - hx);
     }
-    this.stairsWasOpen = false;
-    if (this.floorCount > 1) sfx.stairs();
-    this.fog.reset(this.floorCount);
-    this.rig.snapBack();
-    this.rig.x = -1;
+    return { ...s, aim };
   }
 
-  destroyView(v: View) {
-    v.spr.destroy();
-    v.extra?.forEach((o) => o.destroy());
-  }
+  // ---------- events ----------
 
-  sync<T extends { id: number; x: number; y: number }>(
-    map: Map<number, View>,
-    list: T[],
-    make: (o: T) => View,
-    upd?: (v: View, o: T) => void,
-    dt = 0,
-    remember = false,
-    linger = false,
-  ) {
-    const seen = new Set<number>();
-    for (const o of list) {
-      seen.add(o.id);
-      let v = map.get(o.id);
-      if (!v) {
-        v = make(o);
-        map.set(o.id, v);
-      }
-      v.ghost = false;
-      v.gone = 0;
-      if (dt > 0) {
-        const k = Math.min(1, dt * 15);
-        v.spd += (Math.hypot(o.x - v.x, o.y - v.y) / dt - v.spd) * k;
-        v.mvx = (v.mvx ?? 0) + ((o.x - v.x) / dt - (v.mvx ?? 0)) * k;
-        v.mvy = (v.mvy ?? 0) + ((o.y - v.y) / dt - (v.mvy ?? 0)) * k;
-      }
-      v.x = o.x;
-      v.y = o.y;
-      upd?.(v, o);
+  private burst(x: number, y: number, n: number, color: number, speed = 60, up = 0, g = 200, size = 1.5, life = 0.5) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const v = speed * (0.4 + Math.random() * 0.6);
+      this.fx.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - up, life: life * (0.6 + Math.random() * 0.4), max: life, size, color, g });
     }
-    for (const [id, v] of map)
-      if (!seen.has(id)) {
-        // Out of sight is not gone: keep the last-known prop until its spot is seen again.
-        if (remember && v.seen && !this.client.fog.visibleAt(v.x, v.y)) {
-          v.ghost = true;
-          continue;
-        }
-        if (linger && (v.gone = (v.gone ?? 0) + dt) < LINGER) continue;
-        this.destroyView(v);
-        map.delete(id);
-      }
   }
 
-  view(spr: Phaser.GameObjects.Image, x: number, y: number, kind: string, extra?: Phaser.GameObjects.GameObject[]): View {
-    spr.setPosition(x, y);
-    return { spr, x, y, spd: 0, flash: 0, kind, extra, fade: 0 };
-  }
-
-  /** Opacity for a non-teammate view: in sight (with fade-in), remembered, or hidden. */
-  private fogAlpha(v: View, dt: number, remember = false) {
-    v.fade = Math.min(1, v.fade + dt * 6);
-    const a = this.fog.alphaAt(v.x, v.y);
-    if (a > 0.5) v.seen = true;
-    if (remember && v.seen) return v.ghost ? 1 : Math.max(a * v.fade, 1 - a);
-    return a * v.fade;
-  }
-
-  private syncWorld(view: WorldView, bullets: RenderBullet[], myPos: [number, number] | null, dt: number) {
-    const myId = this.client.myId;
-    const players = view.players.map((p) => (p.id === myId && myPos ? { ...p, x: myPos[0], y: myPos[1] } : p));
-    this.eyes = players;
-    this.sync(
-      this.players,
-      players,
-      (p) => {
-        const body = this.add.image(0, 0, `hero_${p.k}${p.c}`).setOrigin(0.5, 0.8);
-        const wpn = p.k === 'knight' ? this.add.image(0, 0, 'sword').setOrigin(0.22, 0.5) : this.add.image(0, 0, 'bow').setOrigin(0.3, 0.5);
-        const shield = this.add.image(0, 0, `shield${p.c}`).setOrigin(0.5, 0.5).setVisible(p.k === 'knight');
-        const name = this.add
-          .text(0, 0, p.name, { fontFamily: 'monospace', fontSize: '5px', color: PLAYER_COLORS[p.c], stroke: '#000', strokeThickness: 2 })
-          .setOrigin(0.5, 1)
-          .setResolution(4)
-          .setDepth(955);
-        const shadow = this.add.ellipse(0, 0, 10, 4, 0x000000, 0.35).setDepth(4);
-        return this.view(body, p.x, p.y, p.k, [wpn, name, shadow, shield]);
-      },
-      (v, p) => {
-        const name = v.extra![1] as Phaser.GameObjects.Text;
-        const label = p.off ? `${p.name} (offline)` : p.name;
-        if (name.text !== label) name.setText(label);
-      },
-      dt,
-    );
-    this.sync(
-      this.enemies,
-      view.enemies,
-      (e) => {
-        const spr = this.add.image(0, 0, e.k).setOrigin(0.5, 0.75);
-        const shadow = this.add.ellipse(0, 0, e.k === 'boss' ? 26 : e.k === 'brute' ? 14 : 10, e.k === 'boss' ? 8 : 4, 0x000000, 0.35).setDepth(4);
-        return this.view(spr, e.x, e.y, e.k, [shadow]);
-      },
-      undefined,
-      dt,
-      false,
-      true,
-    );
-    this.sync(
-      this.bullets,
-      bullets,
-      (b) => {
-        const spr = this.add.image(0, 0, this.bulletTex(b)).setDepth(800);
-        const glow = this.add.image(0, 0, 'glow').setAlpha(0.8).setBlendMode(Phaser.BlendModes.ADD).setDepth(799);
-        return this.view(spr, b.x, b.y, b.e ? 'eb' : 'pb', [glow]);
-      },
-      (v, b) => {
-        const want = this.bulletTex(b);
-        const glow = v.extra![0] as Phaser.GameObjects.Image;
-        if (v.spr.texture.key !== want || !v.spd) {
-          v.spr.setTexture(want);
-          glow.setTint(b.e ? 0xff4fd8 : b.arrow ? 0xfff0c0 : 0xffb13b).setScale(b.e ? 0.35 : b.arrow ? 0.18 : 0.3);
-          v.spd = 1;
-        }
-        v.vx = b.vx;
-        v.vy = b.vy;
-        v.spr.setScale(b.arrow ? (b.r > 2 ? 1.25 : 1) : b.r > 2 ? 1.4 : 1);
-      },
-    );
-    this.sync(this.barrels, view.barrels, (b) => this.view(this.add.image(0, 0, 'barrel').setOrigin(0.5, 0.7), b.x, b.y, 'barrel'), undefined, 0, true);
-    this.sync(
-      this.items,
-      view.items,
-      (it) => {
-        const glow = this.add
-          .image(it.x, it.y, 'glow')
-          .setTint(it.k === 'potion' ? 0xff3355 : 0xffd23f)
-          .setScale(0.5)
-          .setAlpha(0.6)
-          .setBlendMode(Phaser.BlendModes.ADD)
-          .setDepth(5);
-        return this.view(this.add.image(0, 0, `item_${it.k}`).setDepth(6), it.x, it.y, it.k, [glow]);
-      },
-      undefined,
-      0,
-      true,
-    );
-    this.sync(this.traps, view.traps, (t) => this.view(this.add.image(0, 0, 'trap').setOrigin(0.5, 1).setDepth(6), t.x, t.y, 'trap'));
-    const now = performance.now();
-    this.localTraps = this.localTraps.filter((t) => {
-      const real = view.traps.some((r) => Math.hypot(r.x - t.x, r.y - t.y) < 8);
-      if (real || now > t.until) {
-        t.img.destroy();
-        return false;
-      }
-      return true;
-    });
-  }
-
-  private bulletTex(b: RenderBullet) {
-    return b.e ? 'ebullet' : b.arrow ? 'arrowshot' : 'bullet';
-  }
-
-  private myChar(): CharKind {
-    return this.client.pred.char;
-  }
-
-  private onLatest(s: WorldView) {
-    if (s.stairs && !this.stairsWasOpen) {
-      this.stairsWasOpen = true;
-      this.grate?.setVisible(false);
-      this.stairsGlow?.setVisible(true);
-      this.fx.sparks(this.stairsPos.x, this.stairsPos.y, 30, 0xffd23f, 160);
-      sfx.stairs();
+  private dust(x: number, y: number, n = 6) {
+    for (let i = 0; i < n; i++) {
+      const d = i % 2 ? 1 : -1;
+      this.fx.push({ x: x + d * Math.random() * 4, y, vx: d * (20 + Math.random() * 40), vy: -Math.random() * 25, life: 0.35 + Math.random() * 0.2, max: 0.55, size: 2, color: 0xd8cfc0, g: 30 });
     }
-    this.boot.hud.update(s, this.client.myId);
   }
 
-  nearest(map: Map<number, View>, x: number, y: number, r: number) {
-    let best: View | null = null;
-    let bd = r;
-    for (const v of map.values()) {
-      const d = Math.hypot(v.x - x, v.y - y);
-      if (d < bd) {
-        bd = d;
-        best = v;
-      }
-    }
-    return best;
+  private squash(id: number, v: number) {
+    const a = this.poses.get(id);
+    if (a) a.squash = v;
   }
 
-  shakeAt(x: number, y: number, amount: number) {
-    const me = this.players.get(this.client.myId);
-    const d = me ? Math.hypot(me.x - x, me.y - y) : 0;
-    this.trauma = Math.min(1, this.trauma + amount * Math.max(0.15, 1 - d / 260));
-  }
-
-  popText(x: number, y: number, text: string, color: string) {
-    if (this.fog.shadeAt(x, y) > 0.5) return;
-    const t = this.add
-      .text(x + (Math.random() - 0.5) * 6, y - 10, text, { fontFamily: 'monospace', fontSize: '8px', fontStyle: 'bold', color, stroke: '#000', strokeThickness: 2 })
-      .setOrigin(0.5)
-      .setResolution(4)
-      .setDepth(960);
-    this.tweens.add({ targets: t, y: t.y - 14, alpha: 0, duration: 650, ease: 'Cubic.easeOut', onComplete: () => t.destroy() });
-  }
-
-  // ---------- instant local feedback ----------
   private onPredicted(res: StepResult, s: MoveState) {
-    const me = this.client.myId;
-    const st = this.client.pred.stats;
-    if (res.fire) this.fxShot(s.x, s.y, s.aim, true, res.power);
-    if (res.slash) this.fxSlash(me, s.x, s.y, s.aim, st.arc, st.reach, true);
-    if (res.ability) {
-      if (this.myChar() === 'knight') this.fxBash(me, s.x, s.y, s.aim, true);
-      else this.fxSprint(s.x, s.y);
+    const id = this.boot.client.myId;
+    const char = this.boot.client.pred.char;
+    if (res.jumped) {
+      this.dust(s.x, s.y, 4);
+      this.squash(id, -0.25);
     }
-    if (res.slide) this.fxSlide(me, s.x, s.y, true);
-    if (res.trap && this.client.map) {
-      const [x, y] = trapSpot(this.client.map, s.x, s.y, s.aim);
-      this.fxTrapThrow(s.x, s.y, x, y);
-      const img = this.add.image(x, y, 'trap').setOrigin(0.5, 1).setDepth(6).setAlpha(0.7);
-      this.localTraps.push({ x, y, until: performance.now() + this.client.rtt + 400, img });
+    if (res.land) {
+      this.dust(s.x, s.y, res.land === 2 ? 10 : 5);
+      this.squash(id, res.land === 2 ? 0.35 : 0.2);
     }
-  }
-
-  private onParried(x: number, y: number, deflected: boolean) {
-    this.fx.sparks(x, y, deflected ? 10 : 6, deflected ? 0xffffff : 0xffd23f, deflected ? 140 : 90);
-    if (deflected) this.fx.ring(x, y, 8, 0xffffff);
-    sfx.block();
-    this.trauma = Math.min(1, this.trauma + 0.1);
-  }
-
-  private onImpact(x: number, y: number, what: 'wall' | 'enemy' | 'barrel', id: number) {
-    if (what === 'enemy') {
-      const v = this.enemies.get(id);
-      if (v) v.flash = 0.06;
-      this.fx.sparks(x, y, 4, 0xffffff, 70);
-      sfx.hit();
-    } else {
-      this.fx.sparks(x, y, 4, 0xe8d8b0, 60);
-      sfx.spark();
+    if (res.heavy) {
+      this.burst(s.x, s.y - KIT[char].h / 2, 10, s.heavy ? COL.ironDark : COL.ogre, 50);
+      this.squash(id, s.heavy ? 0.3 : -0.2);
     }
+    if (res.rope) this.ropeFx(res.rope.x, res.rope.y, res.rope.hit);
   }
 
-  private fxShot(x: number, y: number, a: number, local: boolean, power: number) {
-    const bx = x + Math.cos(a) * 8;
-    const by = y - 4 + Math.sin(a) * 8;
-    this.fx.sparks(bx, by, 2 + Math.round(power * 4), 0xfff0c0, 60 + power * 80);
-    if (power >= 1) this.fx.ring(bx, by, 5, 0xffffff);
-    sfx.shot(local, power);
-    if (local) {
-      this.trauma = Math.min(1, this.trauma + 0.03 + power * 0.08);
-      this.kickX -= Math.cos(a) * (1 + power * 2.5);
-      this.kickY -= Math.sin(a) * (1 + power * 2.5);
-    }
+  private ropeFx(x: number, y: number, hit: boolean) {
+    this.burst(x, y, hit ? 6 : 4, hit ? COL.woodLight : COL.rockLight, 40, 0, 150, 1, 0.35);
   }
 
-  private fxSlash(pid: number, x: number, y: number, a: number, arc: number, reach: number, local: boolean) {
-    const v = this.players.get(pid);
-    if (v) {
-      v.swingAt = performance.now();
-      v.swingArc = arc;
-      v.swingDir = -(v.swingDir ?? 1);
-    }
-    const g = this.add.graphics().setDepth(870);
-    const cy = y - 3;
-    const dir = v?.swingDir ?? 1;
-    const from = a - arc * dir;
-    const steps = 12;
-    const inner = (t: number) => reach * (0.85 - 0.45 * t);
-    for (let i = 0; i < steps; i++) {
-      const t0 = i / steps;
-      const t1 = (i + 1) / steps;
-      const a0 = from + 2 * arc * dir * t0;
-      const a1 = from + 2 * arc * dir * t1;
-      g.fillStyle(0xffffff, 0.2 + 0.6 * t1);
-      g.beginPath();
-      g.moveTo(x + Math.cos(a0) * inner(t0), cy + Math.sin(a0) * inner(t0));
-      g.lineTo(x + Math.cos(a0) * reach, cy + Math.sin(a0) * reach);
-      g.lineTo(x + Math.cos(a1) * reach, cy + Math.sin(a1) * reach);
-      g.lineTo(x + Math.cos(a1) * inner(t1), cy + Math.sin(a1) * inner(t1));
-      g.closePath();
-      g.fillPath();
-    }
-    g.lineStyle(1, 0xffd23f, 0.9).beginPath().arc(x, cy, reach + 1, a - arc, a + arc).strokePath();
-    this.tweens.add({ targets: g, alpha: 0, duration: 160, ease: 'Quad.easeIn', onComplete: () => g.destroy() });
-    sfx.slash(local);
-    if (local) {
-      this.kickX += Math.cos(a) * 2.5;
-      this.kickY += Math.sin(a) * 2.5;
-      this.trauma = Math.min(1, this.trauma + 0.08);
-    }
-  }
-
-  private afterimages(pid: number, n: number, gap: number) {
-    const v = this.players.get(pid);
-    if (!v) return;
-    const pl = this.client.latest?.players.find((p) => p.id === pid);
-    const tint = hex(PLAYER_COLORS[pl?.c ?? 0]);
-    for (let i = 0; i < n; i++)
-      this.time.delayedCall(i * gap, () => {
-        const g = this.add
-          .image(v.x, v.y, v.spr.texture.key)
-          .setOrigin(0.5, 0.8)
-          .setFlipX(v.spr.flipX)
-          .setRotation(v.spr.rotation)
-          .setAlpha(0.45)
-          .setTintFill(tint)
-          .setDepth(9);
-        this.tweens.add({ targets: g, alpha: 0, duration: 220, onComplete: () => g.destroy() });
-      });
-  }
-
-  private fxBash(pid: number, x: number, y: number, a: number, local: boolean) {
-    const v = this.players.get(pid);
-    if (v) v.bashAt = performance.now();
-    this.afterimages(pid, 4, 35);
-    this.fx.smoke(x - Math.cos(a) * 4, y + 2, 6, 6, 0x6a6070);
-    sfx.bash();
-    if (local) {
-      this.trauma = Math.min(1, this.trauma + 0.12);
-      this.kickX += Math.cos(a) * 3;
-      this.kickY += Math.sin(a) * 3;
-    }
-  }
-
-  private fxSlide(pid: number, x: number, y: number, local: boolean) {
-    this.afterimages(pid, 3, 45);
-    this.fx.smoke(x, y + 2, 4, 5, 0x8a8090);
-    sfx.slide();
-    if (local) this.trauma = Math.min(1, this.trauma + 0.05);
-  }
-
-  private fxSprint(x: number, y: number) {
-    this.fx.smoke(x, y + 2, 3, 4, 0x8a8090);
-  }
-
-  private fxTrapThrow(x0: number, y0: number, x: number, y: number) {
-    const a = Math.atan2(y - y0, x - x0);
-    const img = this.add.image(x0, y0 - 4, 'arrowshot').setRotation(a).setDepth(800);
-    this.tweens.add({
-      targets: img,
-      x,
-      y: y - 2,
-      duration: 90,
-      onComplete: () => {
-        img.destroy();
-        this.fx.sparks(x, y, 4, 0xc89050, 50);
-        sfx.trap();
-      },
-    });
-  }
-
-  onEvent(e: GameEvent) {
-    const me = this.client.myId;
+  private onEvent(e: GameEvent) {
+    const hud = this.boot.hud;
     switch (e.e) {
-      case 'shot':
-        this.fxShot(e.x, e.y, e.a, false, e.pw);
+      case 'msg':
+        hud.message(e.text, e.big);
         break;
-      case 'slash':
-        this.fxSlash(e.p, e.x, e.y, e.a, e.arc, e.reach, false);
+      case 'win':
+        hud.message('Everyone made it!', true);
+        for (let i = 0; i < 40; i++) this.burst((this.me?.x ?? 0) + (Math.random() - 0.5) * 100, (this.me?.y ?? 0) - 40, 1, hex(PLAYER_COLORS[i % 4]), 120, 60, 150, 2, 1.2);
         break;
-      case 'bash':
-        this.fxBash(e.p, e.x, e.y, e.a, false);
+      case 'jump':
+        this.dust(e.x, e.y, 3);
+        this.squash(e.p, -0.25);
         break;
-      case 'slide':
-        this.fxSlide(e.p, e.x, e.y, false);
+      case 'land':
+        this.dust(e.x, e.y, e.hard ? 10 : 5);
+        this.squash(e.p, e.hard ? 0.35 : 0.2);
         break;
-      case 'sprint':
-        this.fxSprint(e.x, e.y);
+      case 'heavy':
+        this.squash(e.p, e.on ? 0.3 : -0.2);
         break;
-      case 'trap':
-        this.fxTrapThrow(e.x0, e.y0, e.x, e.y);
+      case 'pound':
+        this.rings.push({ x: e.x, y: e.y, r: 4, life: 0.4, max: 0.4, color: COL.white });
+        this.dust(e.x, e.y, 16);
+        this.burst(e.x, e.y - 2, 10, COL.rockLight, 90, 60, 400, 2, 0.6);
+        this.squash(e.p, 0.45);
+        this.shake = Math.max(this.shake, 5);
         break;
-      case 'snare': {
-        const v = this.enemies.get(e.id);
-        const x = v?.x ?? e.x;
-        const y = v?.y ?? e.y;
-        this.fx.ring(x, y, 10, 0xc89050);
-        this.fx.sparks(x, y, 10, 0xe8d8b0, 80);
-        this.popText(x, y - 6, 'PINNED', '#e8d8b0');
-        sfx.snare();
+      case 'launch':
+        this.burst(e.x, e.y, 8, COL.gold, 50, 40, 100, 1.5, 0.5);
         break;
+      case 'rope':
+        this.ropeFx(e.x, e.y, e.hit);
+        break;
+      case 'snap':
+        this.burst(e.x, e.y + 10, 12, COL.rope, 70, 20, 300, 1.5, 0.8);
+        this.boot.hud.message('Snap! Too heavy for a rope.');
+        break;
+      case 'grab':
+        this.squash(e.who, -0.3);
+        break;
+      case 'throw':
+        this.squash(e.p, 0.3);
+        break;
+      case 'die':
+        this.burst(e.x, e.y - 6, 18, 0xff6b8b, 80, 40, 200, 2, 0.7);
+        if (e.p === this.boot.client.myId) this.shake = Math.max(this.shake, 4);
+        break;
+      case 'switch':
+        this.burst(e.x, e.y, e.on ? 12 : 4, e.on ? COL.gold : COL.iron, 50, 20, 60, 1.5, 0.6);
+        break;
+      case 'thunk':
+        this.burst(e.x, e.y, 3, COL.rockLight, 30, 0, 100, 1, 0.3);
+        break;
+    }
+  }
+
+  // ---------- frame ----------
+
+  update(_time: number, delta: number) {
+    const { client, debug, hud, input } = this.boot;
+    const now = performance.now();
+    client.update(now);
+    debug.update(now);
+    const dt = Math.min(0.05, delta / 1000);
+
+    if (input.has('KeyR')) {
+      input.restartHeld += dt;
+      if (input.restartHeld > 0.7 && !this.restartSent) {
+        this.restartSent = true;
+        client.net.sendJson({ t: 'restart' });
       }
-      case 'block':
-        this.fx.sparks(e.x, e.y - 3, e.broke ? 20 : 8, e.broke ? 0xff6a3a : 0xffd23f, e.broke ? 150 : 100);
-        if (e.broke) {
-          this.fx.ring(e.x, e.y - 3, 12, 0xff6a3a);
-          this.popText(e.x, e.y - 10, 'GUARD BREAK', '#ff6a3a');
-          sfx.guardBreak();
-        } else sfx.block();
-        if (e.p === me) this.trauma = Math.min(1, this.trauma + (e.broke ? 0.4 : 0.1));
-        break;
-      case 'shove':
-        this.fx.sparks(e.x, e.y - 3, 10, 0xffffff, 120);
-        this.fx.smoke(e.x, e.y, 4, 6, 0x8a8090);
-        this.shakeAt(e.x, e.y, 0.2);
-        sfx.slam();
-        break;
-      case 'eshot':
-        sfx.eshot();
-        break;
-      case 'hit': {
-        if (e.who === 'enemy') {
-          const v = this.enemies.get(e.id);
-          const x = v?.x ?? e.x;
-          const y = v?.y ?? e.y;
-          if (v) v.flash = 0.07;
-          const kind = v?.kind ?? 'grunt';
-          this.fx.blood(x, y, e.a, 7, 0.8, this.fx.palette(kind));
-          this.popText(x, y - (kind === 'boss' ? 16 : 4), String(e.dmg), '#ffffff');
-          if (e.by !== me) sfx.hit();
-          this.shakeAt(x, y, 0.06);
-        } else {
-          const v = this.players.get(e.id);
-          const x = v?.x ?? e.x;
-          const y = v?.y ?? e.y;
-          if (v) v.flash = 0.12;
-          this.fx.blood(x, y, e.a, 12, 1);
-          this.popText(x, y - 8, String(e.dmg), '#ff5a6e');
-          if (e.id === me) {
-            this.trauma = Math.min(1, this.trauma + 0.45);
-            this.zoomPunch += 0.04;
-            this.boot.hud.flash(0.3);
-            sfx.hurt();
-            this.hitstopUntil = performance.now() + 60;
-          } else sfx.hit();
-        }
-        break;
+    } else {
+      input.restartHeld = 0;
+      this.restartSent = false;
+    }
+    hud.restart(Math.min(1, input.restartHeld / 0.7));
+    if (this.dev) for (let i = 1; i <= 9; i++) if (input.pressedOnce(`Digit${i}`)) client.net.sendJson({ t: 'warp', cp: i - 1 });
+
+    const view = client.sample();
+    this.view = view;
+    if (!view || !this.map) return;
+    const positions = this.resolvePositions(view);
+    this.me = positions.get(client.myId) ?? null;
+
+    this.updateCamera(dt);
+    this.stepFx(dt);
+
+    this.back.clear();
+    this.dyn.clear();
+    this.top.clear();
+    this.drawBodies(view.bodies);
+    this.drawRopes(view, positions, dt);
+    for (const a of view.arrows) this.drawArrow(a.x, a.y, a.a);
+    for (const p of positions.values()) this.drawPlayer(p, dt);
+    this.drawAimGuide();
+    this.drawFx();
+    this.updateNames(positions);
+    hud.players(client.meta, client.myId);
+  }
+
+  /** Final on-screen position of every player: you from prediction, others interpolated, riders glued to what they ride. */
+  private resolvePositions(view: WorldView): Map<number, PlayerView> {
+    const { client } = this.boot;
+    const out = new Map<number, PlayerView>();
+    const raw = new Map(view.players.map((p) => [p.id, p]));
+    const s = client.pred.state;
+    const mine = raw.get(client.myId);
+    if (s && mine) {
+      raw.set(client.myId, {
+        ...mine,
+        char: client.pred.char,
+        x: s.x,
+        y: s.y,
+        vx: s.vx,
+        aim: this.readAimForDraw(),
+        heavy: !!s.heavy,
+        gnd: !!s.gnd,
+        pound: !!s.pound,
+        rope: !!s.rm,
+        rax: s.rax,
+        ray: s.ray,
+        left: s.face < 0,
+        stun: !!s.stun,
+        par: s.par,
+        pm: s.pm,
+        ox: s.ox,
+        oy: s.oy,
+        held: s.held,
+      });
+    }
+    const bodies = new Map(view.bodies.map((b) => [b.id, b]));
+    const resolve = (id: number, depth: number): PlayerView | null => {
+      const done = out.get(id);
+      if (done) return done;
+      const p = raw.get(id);
+      if (!p) return null;
+      const r = { ...p };
+      if (id === client.myId && s && s.pm === PM.none) {
+        const rp = client.pred.renderPos(client.alpha);
+        if (rp) [r.x, r.y] = rp;
       }
-      case 'die': {
-        const v = this.enemies.get(e.id);
-        const x = v?.x ?? e.x;
-        const y = v?.y ?? e.y;
-        const pal = this.fx.palette(e.k);
-        this.fx.blood(x, y, e.a, e.k === 'boss' ? 120 : 34, e.k === 'boss' ? 2 : 1.4, pal);
-        this.fx.blood(x, y, e.a + Math.PI, 8, 0.6, pal);
-        this.fx.pool(x + Math.cos(e.a) * 4, y + Math.sin(e.a) * 4, e.k === 'boss' ? 22 : e.k === 'brute' ? 11 : 8, pal);
-        this.fx.corpse(e.k, x + Math.cos(e.a) * 3, y + Math.sin(e.a) * 3, e.a + Math.PI / 2 + (Math.random() - 0.5));
-        if (e.k === 'archer') this.fx.sparks(x, y, 10, 0xe8e0c8, 90);
-        this.shakeAt(x, y, e.k === 'boss' ? 1 : 0.28);
-        this.zoomPunch += e.k === 'boss' ? 0.12 : 0.02;
-        this.hitstopUntil = performance.now() + (e.k === 'boss' ? 400 : 45);
-        sfx.die();
-        if (v) {
-          this.destroyView(v);
-          this.enemies.delete(e.id);
+      if (r.pm !== PM.none && depth < 5) {
+        let parent: SimBody | undefined = bodies.get(r.par);
+        if (!parent) {
+          const pp = resolve(r.par, depth + 1);
+          if (pp && pp.char === 'ogre') parent = ogreBody(pp.id, pp.x, pp.y);
         }
-        this.client.deadIds.add(e.id);
-        if (e.k === 'boss') {
-          for (let i = 0; i < 6; i++)
-            this.time.delayedCall(i * 140, () => {
-              this.fx.explosion(x + (Math.random() - 0.5) * 40, y + (Math.random() - 0.5) * 40, 30);
-              sfx.boom();
-            });
-          this.boot.hud.flash(0.5);
-        }
-        break;
+        if (parent) [r.x, r.y] = attachedPos(r as unknown as MoveState, parent, r.char);
       }
-      case 'boom': {
-        if (e.r === 0) {
-          this.fx.ring(e.x, e.y, 40, 0xb05aff);
-          this.fx.smoke(e.x, e.y, 20, 40, 0x5a2280);
-          sfx.roar();
+      out.set(id, r);
+      return r;
+    };
+    for (const id of raw.keys()) resolve(id, 0);
+    return out;
+  }
+
+  private readAimForDraw() {
+    const s = this.boot.client.pred.state;
+    if (!s || !this.me) return 0;
+    const [wx, wy] = this.pointerWorld();
+    return Math.atan2(wy - (this.me.y - KIT[this.me.char].h + 3), wx - this.me.x);
+  }
+
+  private updateCamera(dt: number) {
+    const cam = this.cameras.main;
+    const me = this.me;
+    if (!me) return;
+    const [wx, wy] = this.pointerWorld();
+    const lookX = Math.max(-40, Math.min(40, (wx - me.x) * 0.15));
+    const lookY = Math.max(-30, Math.min(30, (wy - me.y) * 0.15));
+    const tx = me.x + lookX;
+    const ty = me.y - 20 + lookY;
+    if (!Number.isFinite(this.camX)) {
+      this.camX = tx;
+      this.camY = ty;
+    }
+    const k = 1 - Math.exp(-dt * 8);
+    this.camX += (tx - this.camX) * k;
+    this.camY += (ty - this.camY) * k;
+    this.shake *= Math.exp(-dt * 10);
+    const sx = (Math.random() - 0.5) * this.shake;
+    const sy = (Math.random() - 0.5) * this.shake;
+    cam.centerOn(this.camX + sx, this.camY + sy);
+    this.hills.setPosition(cam.scrollX * 0.75, cam.scrollY * 0.85);
+  }
+
+  // ---------- drawing ----------
+
+  /** Where a pulley rope goes up to: the first solid tile above. */
+  private wheelAbove(x: number, y: number): number {
+    const m = this.map!;
+    let ty = Math.floor(y / TILE);
+    while (ty > 0 && !isSolid(tileAt(m, Math.floor(x / TILE), ty - 1))) ty--;
+    return ty * TILE + 6;
+  }
+
+  private drawBodies(bodies: SimBody[]) {
+    const g = this.back;
+    const byId = new Map(bodies.map((b) => [b.id, b]));
+    for (const b of bodies) {
+      switch (b.k) {
+        case BK.hook: {
+          const cx = b.x + b.w / 2;
+          const lift = byId.get(b.id + 1);
+          const wy = this.wheelAbove(cx, b.y);
+          if (lift && lift.k === BK.lift) {
+            const lx = lift.x + lift.w / 2;
+            const ly = this.wheelAbove(lx, lift.y);
+            const top = Math.min(wy, ly);
+            g.lineStyle(1, COL.rope, 1);
+            g.lineBetween(cx, top, lx, top);
+            g.lineBetween(lx, top, lx, lift.y);
+            this.wheel(g, lx, top);
+          }
+          g.lineStyle(1, COL.rope, 1);
+          g.lineBetween(cx, Math.min(wy, b.y), cx, b.y);
+          this.wheel(g, cx, Math.min(wy, lift ? this.wheelAbove(lift.x + lift.w / 2, lift.y) : wy));
+          g.fillStyle(COL.iron, 1);
+          g.fillRect(b.x + 2, b.y, b.w - 4, 2);
+          g.lineStyle(2, COL.iron, 1);
+          g.beginPath();
+          g.arc(cx, b.y + 3, 3, Math.PI * 0.1, Math.PI * 1.05, false);
+          g.strokePath();
           break;
         }
-        this.fx.explosion(e.x, e.y, e.r);
-        const gl = this.add.image(e.x, e.y, 'glow').setDepth(870).setTint(0xffc060).setScale(e.r / 14).setBlendMode(Phaser.BlendModes.ADD);
-        this.tweens.add({ targets: gl, alpha: 0, scale: e.r / 10, duration: 350, onComplete: () => gl.destroy() });
-        this.shakeAt(e.x, e.y, 0.9);
-        this.zoomPunch += 0.05;
-        this.hitstopUntil = performance.now() + 70;
-        sfx.boom();
-        break;
-      }
-      case 'fall': {
-        const src = e.who === 'player' ? this.players : this.enemies;
-        const v = this.nearest(src, e.x, e.y, 14) ?? this.nearest(this.barrels, e.x, e.y, 14);
-        if (v) {
-          const ghost = this.add.image(e.x, e.y, v.spr.texture.key).setDepth(1.5).setOrigin(0.5);
-          this.tweens.add({ targets: ghost, scale: 0, angle: 200, alpha: 0.2, duration: 500, ease: 'Quad.easeIn', onComplete: () => ghost.destroy() });
+        case BK.lift: {
+          g.fillStyle(COL.woodDark, 1);
+          g.fillRect(b.x, b.y, b.w, b.h);
+          g.fillStyle(COL.plank, 1);
+          g.fillRect(b.x, b.y, b.w, 3);
+          g.fillStyle(COL.iron, 1);
+          g.fillRect(b.x + 1, b.y + 4, 2, 2);
+          g.fillRect(b.x + b.w - 3, b.y + 4, 2, 2);
+          g.lineStyle(1, COL.rope, 0.9);
+          g.lineBetween(b.x + 2, b.y, b.x + b.w / 2, b.y - 8);
+          g.lineBetween(b.x + b.w - 2, b.y, b.x + b.w / 2, b.y - 8);
+          break;
         }
-        this.fx.smoke(e.x, e.y, 6, 8, 0x20182a);
-        sfx.fall();
-        break;
-      }
-      case 'pickup': {
-        this.fx.sparks(e.x, e.y, 18, e.k === 'potion' ? 0xff3355 : 0xffd23f, 90);
-        this.fx.ring(e.x, e.y, 14, 0xffd23f);
-        const info = itemInfo(e.k, this.myChar());
-        this.popText(e.x, e.y - 6, info.name, '#ffd23f');
-        sfx.pickup();
-        if (e.p === me) this.boot.hud.feed(`${info.name}: ${info.desc}`);
-        break;
-      }
-      case 'level': {
-        const v = this.players.get(e.p);
-        if (v) {
-          this.fx.ring(v.x, v.y, 22, 0xffd23f);
-          this.fx.sparks(v.x, v.y, 24, 0xffd23f, 110);
-          this.popText(v.x, v.y - 12, 'LEVEL UP', '#ffd23f');
+        case BK.gate: {
+          g.fillStyle(COL.ironDark, 1);
+          g.fillRect(b.x, b.y, b.w, 3);
+          g.fillRect(b.x, b.y + b.h - 3, b.w, 3);
+          g.fillStyle(COL.iron, 1);
+          for (let x = b.x + 1; x < b.x + b.w - 1; x += 4) g.fillRect(x, b.y, 2, b.h);
+          g.fillStyle(COL.ironDark, 1);
+          g.fillRect(b.x, b.y + b.h / 2, b.w, 2);
+          break;
         }
-        if (e.p === me) sfx.level();
-        break;
-      }
-      case 'burn':
-        this.fx.embers(e.x, e.y, 6);
-        sfx.burn();
-        break;
-      case 'spark':
-        this.fx.sparks(e.x, e.y, 5, 0xffe066, 80);
-        sfx.spark();
-        break;
-      case 'slam':
-        this.fx.smoke(e.x, e.y, 10, 12, 0x6a6070);
-        this.fx.sparks(e.x, e.y, 12, 0xffffff, 120);
-        this.shakeAt(e.x, e.y, 0.4);
-        sfx.slam();
-        break;
-      case 'down': {
-        const v = this.players.get(e.p);
-        if (v) this.fx.pool(v.x, v.y, 9);
-        if (e.p === me) {
-          this.boot.hud.flash(0.6);
-          this.trauma = 1;
+        case BK.lever: {
+          const on = b.s > 0;
+          const bx = b.x + b.w / 2;
+          const by = b.y + b.h;
+          g.fillStyle(COL.ironDark, 1);
+          g.fillRect(b.x, by - 4, b.w, 4);
+          const a = on ? -Math.PI / 2 + 0.7 : -Math.PI / 2 - 0.7;
+          g.lineStyle(2, COL.woodLight, 1);
+          g.lineBetween(bx, by - 3, bx + Math.cos(a) * 10, by - 3 + Math.sin(a) * 10);
+          g.fillStyle(on ? COL.gold : 0xff6b8b, 1);
+          g.fillCircle(bx + Math.cos(a) * 10, by - 3 + Math.sin(a) * 10, 2);
+          break;
         }
-        sfx.die();
-        break;
-      }
-      case 'revive': {
-        const v = this.players.get(e.p);
-        if (v) {
-          this.fx.ring(v.x, v.y, 24, 0x7dff8a);
-          this.fx.sparks(v.x, v.y, 20, 0x7dff8a, 100);
+        case BK.plate: {
+          const on = b.s > 0;
+          g.fillStyle(on ? COL.gold : COL.iron, 1);
+          g.fillRect(b.x + 1, b.y + (on ? 2 : 0), b.w - 2, on ? 1 : 3);
+          // A weight glyph so a heavy plate reads as heavy.
+          g.fillStyle(on ? COL.gold : COL.ironDark, 0.9);
+          const cx = b.x + b.w / 2;
+          g.fillRect(cx - 4, b.y - 8, 8, 6);
+          g.fillRect(cx - 2, b.y - 10, 4, 2);
+          break;
         }
-        sfx.level();
-        break;
+        case BK.target: {
+          const cx = b.x + b.w / 2;
+          const cy = b.y + b.h / 2;
+          g.fillStyle(b.s ? COL.grass : 0xe8233f, 1);
+          g.fillCircle(cx, cy, 6);
+          g.fillStyle(COL.white, 1);
+          g.fillCircle(cx, cy, 4);
+          g.fillStyle(b.s ? COL.grass : 0xe8233f, 1);
+          g.fillCircle(cx, cy, 2);
+          break;
+        }
+        case BK.goal: {
+          const t = performance.now() / 1000;
+          g.fillStyle(COL.gold, 0.08 + Math.sin(t * 2) * 0.03);
+          g.fillRect(b.x, b.y, b.w, b.h);
+          g.fillStyle(COL.gold, 0.5);
+          for (let i = 0; i < 6; i++) {
+            const px = b.x + ((i * 37 + t * 10) % b.w);
+            const py = b.y + b.h - ((t * 12 + i * 11) % b.h);
+            g.fillRect(px, py, 1, 1);
+          }
+          const fx = b.x + b.w - 20;
+          g.fillStyle(COL.woodDark, 1);
+          g.fillRect(fx, b.y + 2, 1, b.h - 2);
+          g.fillStyle(COL.gold, 1);
+          g.fillTriangle(fx + 1, b.y + 2, fx + 1, b.y + 10, fx + 10 + Math.sin(t * 4), b.y + 6);
+          break;
+        }
+        case BK.checkpoint: {
+          const px = b.x + 2;
+          const top = b.y;
+          g.fillStyle(COL.woodDark, 1);
+          g.fillRect(px, top, 1, b.h);
+          const on = b.s > 0;
+          const fy = on ? top : top + b.h - 9;
+          g.fillStyle(on ? COL.grass : COL.iron, 1);
+          g.fillTriangle(px + 1, fy, px + 1, fy + 6, px + 8, fy + 3);
+          break;
+        }
       }
-      case 'deflect':
-        this.fx.sparks(e.x, e.y, 12, 0xffffff, 140);
-        this.fx.ring(e.x, e.y, 8, 0xffffff);
-        sfx.spark();
-        this.shakeAt(e.x, e.y, 0.15);
-        break;
-      case 'msg':
-        if (e.big) this.boot.hud.banner(e.text);
-        else this.boot.hud.feed(e.text);
-        break;
-      case 'boss':
-        sfx.roar();
-        this.boot.hud.flash(0.4);
-        this.trauma = 1;
-        break;
     }
   }
 
-  update(_t: number, dtMs: number) {
-    const dt = Math.min(0.05, dtMs / 1000);
-    const now = performance.now();
-    const c = this.client;
-    const cam = this.cameras.main;
-    const frozen = now < this.hitstopUntil;
-
-    const pointer = this.input.activePointer;
-    const wp = cam.getWorldPoint(pointer.x, pointer.y);
-    const meView = this.players.get(c.myId);
-    if (this.auto && this.bot) {
-      this.aim = this.auto.aim;
-      wp.x = this.bot.aimX;
-      wp.y = this.bot.aimY;
-    } else if (meView) this.aim = Math.atan2(wp.y - (meView.y - 3), wp.x - meView.x);
-
-    c.update(now);
-    const latest = c.latest;
-    if (latest && latest !== this.lastLatest) {
-      this.lastLatest = latest;
-      this.onLatest(latest);
-    }
-    const view = c.sample();
-    const myPos = c.myRenderPos();
-    const bullets = c.renderBullets(now);
-    if (view && !frozen) this.syncWorld(view, bullets, myPos, dt);
-    if (this.bot && latest && myPos) {
-      const meSnap = latest.players.find((p) => p.id === c.myId);
-      const players = latest.players.map((p) => (p.id === c.myId ? { ...p, x: myPos[0], y: myPos[1] } : p));
-      this.auto = meSnap ? this.bot.step({ ...latest, players, enemies: view?.enemies ?? latest.enemies, bullets }, c.myId, now, c.pred.state, c.pred.stats) : null;
-      if (this.auto?.aPress) this.pressA = true;
-      if (this.auto?.bPress) this.pressB = true;
-      if (this.auto?.movePress) this.pressMove = true;
-    }
-
-    if (view && latest) this.drawEntities(view, latest, dt, this.aim);
-    this.cross.setPosition(wp.x, wp.y);
-
-    this.client.fog.see(this.eyes);
-    this.fog.update(dt);
-
-    const me = this.players.get(c.myId);
-    const selfFocus = me
-      ? { x: me.x + Phaser.Math.Clamp((wp.x - me.x) * 0.28, -70, 70), y: me.y + Phaser.Math.Clamp((wp.y - me.y) * 0.28, -50, 50) }
-      : null;
-    const bounds = { w: (this.map?.w ?? 0) * TILE, h: (this.map?.h ?? 0) * TILE };
-    this.rig.update(dt, selfFocus, (id) => this.players.get(id) ?? null, bounds);
-    this.trauma = Math.max(0, this.trauma - dt * 1.6);
-    this.zoomPunch *= Math.exp(-dt * 10);
-    this.kickX *= Math.exp(-dt * 14);
-    this.kickY *= Math.exp(-dt * 14);
-    const sh = this.trauma * this.trauma * 7;
-    cam.setZoom(this.baseZoom * (1 + this.zoomPunch));
-    cam.centerOn(this.rig.x + this.kickX + (Math.random() * 2 - 1) * sh, this.rig.y + this.kickY + (Math.random() * 2 - 1) * sh);
-    cam.setRotation(this.trauma * this.trauma * (Math.random() - 0.5) * 0.03);
-
-    this.animateTiles(now);
-    this.fx.update(dt);
-    const ps = c.pred.state;
-    if (ps) this.boot.hud.kit(ps, c.pred.stats, c.pred.char);
-    this.drawIndicators(latest, me);
-    this.updateCamTag(latest);
-    this.boot.debug.update(now);
+  private wheel(g: Phaser.GameObjects.Graphics, x: number, y: number) {
+    g.fillStyle(COL.ironDark, 1);
+    g.fillCircle(x, y, 4);
+    g.fillStyle(COL.iron, 1);
+    g.fillCircle(x, y, 2);
   }
 
-  private updateCamTag(s: WorldView | null) {
-    const m = this.rig.mode;
-    const who = m.k === 'follow' ? s?.players.find((p) => p.id === m.id) : undefined;
-    const key = m.k === 'follow' ? `f${m.id}${who?.name}` : m.k;
-    if (key === this.camTagKey || !this.camTag) return;
-    this.camTagKey = key;
-    this.camTag.hidden = m.k === 'self';
-    if (m.k === 'free') this.camTag.innerHTML = '<b>FREE CAMERA</b> <kbd>C</kbd> / middle-click to return';
-    else if (m.k === 'follow' && who)
-      this.camTag.innerHTML = `<b>WATCHING <span style="color:${PLAYER_COLORS[who.c]}">${who.name.replace(/[&<>"']/g, '')}</span></b> <kbd>Tab</kbd> next · <kbd>C</kbd> back to you`;
+  private drawRopes(view: WorldView, pos: Map<number, PlayerView>, dt: number) {
+    const g = this.dyn;
+    const holders = new Map<string, PlayerView>();
+    for (const p of pos.values()) {
+      if (!p.rope) continue;
+      const [hx, hy] = [p.x, p.y - KIT[p.char].h + 3];
+      g.lineStyle(1, COL.rope, 1);
+      g.lineBetween(p.rax, p.ray, hx, hy);
+      g.fillStyle(COL.woodDark, 1);
+      g.fillRect(p.rax - 1, p.ray - 1, 2, 2);
+      holders.set(`${Math.round(p.rax * 8)}:${Math.round(p.ray * 8)}`, p);
+    }
+    const live = new Set<number>();
+    for (const r of view.ropes) {
+      live.add(r.id);
+      const holder = holders.get(`${Math.round(r.ax * 8)}:${Math.round(r.ay * 8)}`);
+      if (holder) {
+        this.ropeHeld.set(r.id, [holder.x, holder.y - KIT[holder.char].h + 3]);
+        this.ropeSims.delete(r.id);
+        continue;
+      }
+      let sim = this.ropeSims.get(r.id);
+      if (!sim) {
+        const n = Math.max(3, Math.round(r.len / 8));
+        const end = this.ropeHeld.get(r.id);
+        sim = { pts: [], seg: r.len / n };
+        for (let i = 0; i <= n; i++) {
+          const f = i / n;
+          const x = end ? r.ax + (end[0] - r.ax) * f : r.ax;
+          const y = end ? r.ay + (end[1] - r.ay) * f : r.ay + r.len * f;
+          sim.pts.push({ x, y, px: x, py: y });
+        }
+        this.ropeSims.set(r.id, sim);
+        this.ropeHeld.delete(r.id);
+      }
+      this.stepRope(sim, r.ax, r.ay, dt);
+      g.lineStyle(1, COL.rope, 1);
+      g.beginPath();
+      g.moveTo(sim.pts[0].x, sim.pts[0].y);
+      for (const p of sim.pts) g.lineTo(p.x, p.y);
+      g.strokePath();
+      g.fillStyle(COL.woodDark, 1);
+      g.fillRect(r.ax - 1, r.ay - 1, 2, 2);
+      const end = sim.pts[sim.pts.length - 1];
+      g.fillStyle(COL.rope, 1);
+      g.fillRect(end.x - 1, end.y - 1, 2, 2);
+    }
+    for (const id of this.ropeSims.keys()) if (!live.has(id)) this.ropeSims.delete(id);
   }
 
-  drawEntities(s: WorldView, latest: WorldView, dt: number, myAim: number) {
-    const o = this.overlay;
-    o.clear();
-    const t = performance.now() / 1000;
-    const myId = this.client.myId;
-    const pred = this.client.pred.state;
-    const now = performance.now();
-    const st = this.client.pred.stats;
-    for (const sp of s.players) {
-      const v = this.players.get(sp.id);
-      if (!v) continue;
-      const mine = sp.id === myId;
-      const p: PlayerSnap = mine ? latest.players.find((q) => q.id === myId) ?? sp : sp;
-      const [wpn, name, shadow, shield] = v.extra as [Phaser.GameObjects.Image, Phaser.GameObjects.Text, Phaser.GameObjects.Ellipse, Phaser.GameObjects.Image];
-      const ps = mine ? pred : null;
-      const aim = mine ? myAim : p.aim;
-      const down = ps ? ps.down : p.down;
-      const mode = ps ? ps.mode : p.mode;
-      const knight = v.kind === 'knight';
-      const block = ps ? ps.block > 0 || (knight && ps.mode === MODE.bash) : p.block;
-      const drawF = ps ? (knight ? 0 : Math.min(1, ps.draw / st.drawTicks)) : p.draw;
-      const sliding = mode === MODE.slide || mode === MODE.skid;
-      const sprinting = !knight && (mode === MODE.sprint || mode === MODE.coast);
-      const bashing = knight && mode === MODE.bash;
-      const moving = v.spd > 12;
-      const bob = moving && !down && !sliding && !bashing ? Math.abs(Math.sin(t * (sprinting ? 22 : 16) + p.id)) : 0;
-      const mvx = v.mvx ?? 0;
-      const flip = sprinting || sliding ? mvx < -5 || (Math.abs(mvx) <= 5 && Math.cos(aim) < 0) : Math.cos(aim) < 0;
-      const side = flip ? -1 : 1;
-      const hop = bashing ? Math.sin(Math.min(1, (now - (v.bashAt ?? now)) / 233) * Math.PI) * 4 : 0;
-      v.spr.setPosition(v.x, v.y - bob * 1.5 - hop);
-      v.spr.setFlipX(flip);
-      if (sliding) v.spr.setScale(1.12, 0.84);
-      else v.spr.setScale(1 + bob * 0.06, 1 - bob * 0.08);
-      let rot = moving ? Math.sin(t * 16 + p.id) * 0.08 : 0;
-      if (down) rot = Math.PI / 2;
-      else if (sliding) rot = -0.5 * side;
-      else if (sprinting) rot = 0.2 * side;
-      else if (bashing) rot = 0.28 * side;
-      v.spr.setRotation(rot);
-      const depth = 10 + v.y * 0.01;
-      v.spr.setDepth(depth);
-      v.flash -= dt;
-      if (down) v.spr.setTint(0x6a6070);
-      else if (v.flash > 0) v.spr.setTintFill(0xffffff);
-      else v.spr.clearTint();
-      v.spr.setAlpha(p.off ? 0.35 : p.inv && !down && Math.floor(t * 20) % 2 ? 0.45 : 1);
-      wpn.setVisible(!down);
-      const hx = v.x + Math.cos(aim) * 3;
-      const hy = v.y - 4 - hop + Math.sin(aim) * 3;
-      if (!knight) {
-        if (sprinting) wpn.setPosition(v.x - side * 2, v.y - 6 - bob).setRotation(-Math.PI / 2 + side * 0.5);
-        else wpn.setPosition(hx, hy).setRotation(aim);
-        wpn.setDepth(depth + (Math.sin(aim) > 0 ? 0.001 : -0.001));
-        if (drawF > 0 && !down && !sprinting) this.drawBowString(o, hx, hy, aim, drawF, t);
-        if (mine && drawF >= 1 && !this.wasFull) sfx.fullDraw();
-        if (mine) this.wasFull = drawF >= 1;
-      } else {
-        const sw = v.swingAt ? (now - v.swingAt) / 140 : 1;
-        if (sw < 1) {
-          const arc = v.swingArc ?? 1.2;
-          const dir = v.swingDir ?? 1;
-          const k = 1 - (1 - sw) * (1 - sw);
-          const a = aim - arc * dir + 2 * arc * dir * k;
-          wpn.setPosition(v.x + Math.cos(a) * 3, v.y - 4 - hop + Math.sin(a) * 3).setRotation(a);
-        } else wpn.setPosition(v.x + side * 3, v.y - 3 - hop).setRotation(aim + side * 1.05);
-        wpn.setFlipY(Math.cos(wpn.rotation) < 0);
-        shield.setVisible(!down);
-        if (block) {
-          shield
-            .setPosition(v.x + Math.cos(aim) * 6, v.y - 4 - hop + Math.sin(aim) * 4)
-            .setScale(1)
-            .setDepth(depth + (Math.sin(aim) > -0.4 ? 0.002 : -0.002));
-          wpn.setDepth(depth - 0.001);
-          o.lineStyle(1, hex(PLAYER_COLORS[p.c]), 0.5).beginPath().arc(v.x, v.y - 3, 11, aim - SHIELD_ARC, aim + SHIELD_ARC).strokePath();
+  private stepRope(sim: RopeSim, ax: number, ay: number, dt: number) {
+    const pts = sim.pts;
+    const d = Math.min(dt, 1 / 30);
+    for (let i = 1; i < pts.length; i++) {
+      const p = pts[i];
+      const vx = (p.x - p.px) * 0.99;
+      const vy = (p.y - p.py) * 0.99;
+      p.px = p.x;
+      p.py = p.y;
+      p.x += vx;
+      p.y += vy + GRAV * 0.3 * d * d;
+    }
+    pts[0].x = pts[0].px = ax;
+    pts[0].y = pts[0].py = ay;
+    for (let it = 0; it < 8; it++)
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1];
+        const b = pts[i];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy) || 1e-6;
+        const diff = (len - sim.seg) / len;
+        if (i === 1) {
+          b.x -= dx * diff;
+          b.y -= dy * diff;
         } else {
-          shield.setPosition(v.x - side * 4, v.y - 4 - hop - bob).setScale(0.8).setDepth(depth - 0.002);
-          wpn.setDepth(depth + 0.001);
+          a.x += dx * diff * 0.5;
+          a.y += dy * diff * 0.5;
+          b.x -= dx * diff * 0.5;
+          b.y -= dy * diff * 0.5;
         }
       }
-      if (sliding && moving && Math.random() < 0.25) this.fx.smoke(v.x, v.y + 1, 1, 2, 0x8a8090);
-      if (knight && mode === MODE.skid && Math.random() < 0.5) this.fx.sparks(v.x, v.y + 1, 1, 0xffe066, 50);
-      if (sprinting && moving && Math.random() < 0.25) this.fx.smoke(v.x, v.y + 1, 1, 2, 0x6a6070);
-      name.setPosition(v.x, v.y - 16).setVisible(!mine);
-      shadow.setPosition(v.x, v.y + 1).setScale(sliding ? 1.3 : bashing ? 0.8 : 1, 1);
-      if (!mine && !p.down) this.bar(o, v.x, v.y - 14, 14, p.hp / p.maxHp, 0xff3355);
-      if (p.down) {
-        o.lineStyle(2, 0x000000, 0.6).strokeCircle(v.x, v.y - 2, 10);
-        o.lineStyle(2, 0x7dff8a, 1).beginPath().arc(v.x, v.y - 2, 10, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * p.rev).strokePath();
+  }
+
+  private drawArrow(x: number, y: number, a: number) {
+    const g = this.dyn;
+    const dx = Math.cos(a);
+    const dy = Math.sin(a);
+    g.lineStyle(1, COL.woodLight, 1);
+    g.lineBetween(x - dx * 7, y - dy * 7, x, y);
+    g.fillStyle(COL.white, 1);
+    g.fillRect(x - dx * 7 - 1, y - dy * 7 - 1, 2, 2);
+    g.fillStyle(COL.iron, 1);
+    g.fillRect(x - 0.5, y - 0.5, 1.5, 1.5);
+  }
+
+  private drawPlayer(p: PlayerView, dt: number) {
+    if (p.off) return;
+    const g = this.dyn;
+    let a = this.poses.get(p.id);
+    if (!a) this.poses.set(p.id, (a = { lastX: p.x, lastY: p.y, vy: 0, walk: 0, squash: 0, seen: 0 }));
+    const moved = p.x - a.lastX;
+    a.vy = dt > 0 ? (p.y - a.lastY) / dt : 0;
+    if (p.gnd || p.pm === PM.stand) a.walk += Math.abs(moved) * 0.35;
+    a.lastX = p.x;
+    a.lastY = p.y;
+    a.squash *= Math.exp(-dt * 10);
+    const color = hex(PLAYER_COLORS[p.c] ?? PLAYER_COLORS[0]);
+    const k = KIT[p.char];
+    const sq = a.squash + (p.heavy ? 0.08 : 0);
+    const w = k.w * (1 + sq * 0.6);
+    const h = k.h * (1 - sq * 0.5);
+    const x = p.x;
+    const y = p.y;
+    const face = p.left ? -1 : 1;
+    const step = p.gnd || p.pm === PM.stand ? Math.sin(a.walk) : 0;
+    const airborne = !p.gnd && p.pm === PM.none;
+
+    // Shadow.
+    g.fillStyle(0x000000, 0.25);
+    g.fillEllipse(x, y, w * 0.9, 2);
+
+    if (p.char === 'ogre') {
+      const skin = p.heavy ? COL.ogreHeavy : COL.ogre;
+      const dark = p.heavy ? COL.ogreHeavyDark : COL.ogreDark;
+      // Legs.
+      g.fillStyle(dark, 1);
+      g.fillRect(x - w / 2 + 2, y - 5 + Math.max(0, step) * 1.5, 5, 5 - Math.max(0, step) * 1.5);
+      g.fillRect(x + w / 2 - 7, y - 5 + Math.max(0, -step) * 1.5, 5, 5 - Math.max(0, -step) * 1.5);
+      // Body.
+      g.fillStyle(skin, 1);
+      g.fillRoundedRect(x - w / 2, y - h, w, h - 4, 4);
+      g.fillStyle(dark, 1);
+      g.fillRect(x - w / 2, y - h + 11, w, 1);
+      // Belly and loincloth in the player's colour.
+      g.fillStyle(p.heavy ? 0x8a90a3 : 0xa9cf83, 1);
+      g.fillEllipse(x, y - h * 0.42, w * 0.6, h * 0.34);
+      g.fillStyle(color, 1);
+      g.fillRect(x - w / 2 + 1, y - 7, w - 2, 3);
+      // Face.
+      const ex = x + face * 2;
+      g.fillStyle(COL.white, 1);
+      g.fillRect(ex - 4, y - h + 4, 2, 2);
+      g.fillRect(ex + 2, y - h + 4, 2, 2);
+      g.fillStyle(COL.ink, 1);
+      g.fillRect(ex - 4 + (face > 0 ? 1 : 0), y - h + 5, 1, 1);
+      g.fillRect(ex + 2 + (face > 0 ? 1 : 0), y - h + 5, 1, 1);
+      g.fillStyle(COL.white, 1);
+      g.fillRect(ex - 3, y - h + 9, 1, 2);
+      g.fillRect(ex + 3, y - h + 9, 1, 2);
+      // Arms: up when holding someone.
+      g.fillStyle(skin, 1);
+      if (p.held) {
+        g.fillRect(x - w / 2 - 2, y - h - 2, 3, 8);
+        g.fillRect(x + w / 2 - 1, y - h - 2, 3, 8);
+      } else {
+        g.fillRect(x - w / 2 - 2, y - h + 8, 3, 7);
+        g.fillRect(x + w / 2 - 1, y - h + 8, 3, 7);
       }
-    }
-    for (const tr of s.traps) {
-      const tv = this.traps.get(tr.id);
-      if (!tv) continue;
-      o.lineStyle(1, hex(PLAYER_COLORS[tr.c]), 0.35 + Math.sin(t * 5) * 0.15).strokeEllipse(tv.x, tv.y, 12, 6);
-      tv.spr.setPosition(tv.x, tv.y).setDepth(6 + tv.y * 0.001);
-    }
-    for (const lt of this.localTraps) o.lineStyle(1, 0xffffff, 0.3).strokeEllipse(lt.x, lt.y, 12, 6);
-    for (const e of s.enemies) {
-      const v = this.enemies.get(e.id);
-      if (!v) continue;
-      const shadow = v.extra![0] as Phaser.GameObjects.Ellipse;
-      let x = v.x;
-      let y = v.y;
-      let rot = 0;
-      let sx = 1;
-      let sy = 1;
-      if (e.s === 1) {
-        x += (Math.random() - 0.5) * 2;
-        sx = 1.1;
-        sy = 0.9;
-      } else if (e.s === 2) {
-        rot = Math.cos(e.a) >= 0 ? 0.25 : -0.25;
-        sx = 1.15;
-        sy = 0.9;
-      } else if (e.s === 3) rot = Math.sin(t * 30) * 0.25;
-      else if (v.spd > 8) y -= Math.abs(Math.sin(t * 12 + e.id)) * 1.5;
-      if (e.k === 'boss') y -= Math.sin(t * 3) * 2;
-      v.spr.setPosition(x, y).setRotation(rot).setScale(sx, sy).setFlipX(Math.cos(e.a) < 0).setDepth(10 + v.y * 0.01);
-      v.flash -= dt;
-      if (v.flash > 0) v.spr.setTintFill(0xffffff);
-      else if (e.s === 1 && Math.floor(t * 20) % 2) v.spr.setTint(0xff6060);
-      else v.spr.clearTint();
-      const fa = this.fogAlpha(v, dt);
-      v.spr.setAlpha(fa).setVisible(fa > 0);
-      shadow.setPosition(v.x, v.y + 1).setAlpha(fa);
-      if (e.hp < e.maxHp && e.k !== 'boss' && fa > 0) this.bar(o, v.x, v.y - (e.k === 'brute' ? 16 : 13), 12, e.hp / e.maxHp, 0xff3355, fa);
-      if (e.rooted && fa > 0) {
-        o.lineStyle(1, 0xc89050, 0.9 * fa).strokeEllipse(v.x, v.y + 1, ENEMY_R[e.k] * 2 + 6, 6);
-        o.lineStyle(1, 0xe8d8b0, 0.6 * fa).strokeEllipse(v.x, v.y + 1, ENEMY_R[e.k] * 2 + 2, 4);
+      if (p.heavy) {
+        // A little weight above his head says "heavy" at a glance.
+        g.fillStyle(COL.ironDark, 1);
+        g.fillRect(x - 4, y - h - 9, 8, 5);
+        g.fillRect(x - 2, y - h - 11, 4, 2);
+        g.fillStyle(COL.iron, 1);
+        g.fillRect(x - 3, y - h - 8, 2, 1);
       }
-    }
-    for (const v of this.enemies.values())
-      if (v.gone) {
-        const fa = this.fogAlpha(v, dt) * Math.max(0, 1 - v.gone / LINGER);
-        v.spr.setAlpha(fa);
-        (v.extra![0] as Phaser.GameObjects.Ellipse).setAlpha(fa);
+      if (p.pound) {
+        g.lineStyle(1, COL.white, 0.6);
+        for (let i = -1; i <= 1; i++) g.lineBetween(x + i * 5, y - h - 14, x + i * 5, y - h - 4);
       }
-    for (const v of this.bullets.values()) {
-      const fa = v.kind === 'eb' ? this.fogAlpha(v, dt) : 1;
-      v.spr.setPosition(v.x, v.y - 3).setRotation(Math.atan2(v.vy ?? 0, v.vx ?? 1)).setAlpha(fa);
-      (v.extra![0] as Phaser.GameObjects.Image).setPosition(v.x, v.y - 3).setAlpha(0.8 * fa);
+    } else {
+      // Archer: little hooded figure with a bow that follows the aim.
+      g.fillStyle(0x3a2a20, 1);
+      g.fillRect(x - 3, y - 4 + Math.max(0, step), 2, 4 - Math.max(0, step));
+      g.fillRect(x + 1, y - 4 + Math.max(0, -step), 2, 4 - Math.max(0, -step));
+      g.fillStyle(color, 1);
+      g.fillRoundedRect(x - w / 2, y - h, w, h - 3, 3);
+      g.fillStyle(0x000000, 0.2);
+      g.fillRect(x - w / 2, y - h + 7, w, 1);
+      g.fillStyle(COL.skin, 1);
+      g.fillRect(x - 3 + face, y - h + 3, 6, 4);
+      g.fillStyle(COL.ink, 1);
+      g.fillRect(x - 2 + face * 2, y - h + 4, 1, 1);
+      g.fillRect(x + 1 + face * 2, y - h + 4, 1, 1);
+      if (airborne && !p.rope && a.vy < 0) g.fillRect(x - 1 + face * 2, y - h + 6, 2, 1);
+      // Bow.
+      const [hx, hy] = [x, y - k.h + 3];
+      const aim = p.aim;
+      const bx = hx + Math.cos(aim) * 5;
+      const by = hy + Math.sin(aim) * 5 + 3;
+      g.lineStyle(1, COL.woodLight, 1);
+      g.beginPath();
+      g.arc(bx, by, 4, aim - 1.2, aim + 1.2, false);
+      g.strokePath();
+      g.lineStyle(1, COL.white, 0.6);
+      g.lineBetween(bx + Math.cos(aim - 1.2) * 4, by + Math.sin(aim - 1.2) * 4, bx + Math.cos(aim + 1.2) * 4, by + Math.sin(aim + 1.2) * 4);
     }
-    for (const v of this.barrels.values()) v.spr.setPosition(v.x, v.y).setDepth(10 + v.y * 0.01).setAlpha(this.fogAlpha(v, dt, true));
-    for (const v of this.items.values()) {
-      const yy = v.ghost ? v.y - 3 : v.y - 3 - Math.sin(t * 4 + v.x) * 2;
-      const fa = this.fogAlpha(v, dt, true);
-      v.spr.setPosition(v.x, yy).setAlpha(fa);
-      (v.extra![0] as Phaser.GameObjects.Image).setPosition(v.x, yy).setAlpha((0.4 + Math.sin(t * 5) * 0.2) * fa);
-    }
-    const dbg = this.boot.debug;
-    const ss = this.client.pred.serverState;
-    if (dbg.shown && dbg.ghost && ss) {
-      o.lineStyle(1, 0xffffff, 0.7).strokeCircle(ss.x, ss.y - 3, 6);
-      o.lineStyle(1, 0xffffff, 0.35).lineBetween(ss.x - 3, ss.y - 3, ss.x + 3, ss.y - 3);
+    if (p.stun && airborne) {
+      g.fillStyle(COL.gold, 0.8);
+      const t = performance.now() / 120;
+      g.fillRect(x + Math.cos(t) * 6, y - h - 4 + Math.sin(t) * 2, 1, 1);
+      g.fillRect(x + Math.cos(t + 3) * 6, y - h - 4 + Math.sin(t + 3) * 2, 1, 1);
     }
   }
 
-  /** Bowstring pulled back by the draw fraction, with the nocked arrow; glints at full draw. */
-  drawBowString(o: Phaser.GameObjects.Graphics, hx: number, hy: number, aim: number, f: number, t: number) {
-    const c = Math.cos(aim);
-    const sn = Math.sin(aim);
-    const at = (fx: number, fy: number): [number, number] => [hx + c * fx - sn * fy, hy + sn * fx + c * fy];
-    const [t1x, t1y] = at(-1.5, -5);
-    const [t2x, t2y] = at(-1.5, 5);
-    const [px, py] = at(-1.5 - f * 4.5, 0);
-    o.lineStyle(0.5, 0xe8e0c8, 1).lineBetween(t1x, t1y, px, py).lineBetween(t2x, t2y, px, py);
-    const [ax, ay] = at(5.5 - f * 4.5, 0);
-    o.lineStyle(0.8, 0xc89050, 1).lineBetween(px, py, ax, ay);
-    o.fillStyle(f >= 1 && Math.floor(t * 12) % 2 ? 0xffffff : 0xdfe4f0, 1).fillRect(ax - 0.6, ay - 0.6, 1.4, 1.4);
-    if (f >= 1) o.fillStyle(0xffffff, 0.35 + Math.sin(t * 20) * 0.2).fillCircle(ax, ay, 2.2);
-  }
-
-  bar(o: Phaser.GameObjects.Graphics, x: number, y: number, w: number, f: number, c: number, alpha = 1) {
-    o.fillStyle(0x000000, 0.8 * alpha).fillRect(Math.round(x - w / 2) - 1, Math.round(y) - 1, w + 2, 4);
-    o.fillStyle(c, alpha).fillRect(Math.round(x - w / 2), Math.round(y), Math.max(0, Math.round(w * f)), 2);
-  }
-
-  animateTiles(now: number) {
-    const tick = Math.floor(this.client.predTick());
-    if (Number.isFinite(tick))
-      for (const sp of this.spikes) {
-        const st = spikeState(tick, sp.tx, sp.ty);
-        if (st !== sp.st) {
-          sp.st = st;
-          sp.img.setTexture(`spk${st}`);
-          if (st === 2 && Math.random() < 0.3) this.fx.sparks(sp.tx * TILE + 8, sp.ty * TILE + 8, 2, 0xd8d8e8, 40);
-        }
+  /** Where your rope arrow would land, or where your throw would go. */
+  private drawAimGuide() {
+    const { client } = this.boot;
+    const me = this.me;
+    const s = client.pred.state;
+    if (!me || !s || !this.map) return;
+    const g = this.top;
+    const [wx, wy] = this.pointerWorld();
+    g.lineStyle(1, COL.white, 0.8);
+    g.strokeCircle(wx, wy, 2.5);
+    g.fillStyle(COL.white, 0.9);
+    g.fillRect(wx - 0.5, wy - 0.5, 1, 1);
+    const [hx, hy] = [me.x, me.y - KIT[me.char].h + 3];
+    const aim = Math.atan2(wy - hy, wx - hx);
+    if (me.char === 'archer') {
+      const c = ropeCast(this.map, hx, hy, aim);
+      const len = Math.hypot(c.x - hx, c.y - hy);
+      g.fillStyle(c.hit ? COL.grass : COL.white, c.hit ? 0.8 : 0.25);
+      for (let d = 6; d < len; d += 5) g.fillRect(hx + Math.cos(aim) * d - 0.5, hy + Math.sin(aim) * d - 0.5, 1, 1);
+      if (c.hit) {
+        g.lineStyle(1, COL.grass, 0.9);
+        g.strokeCircle(c.x, c.y, 3);
       }
-    const lf = Math.floor(now / 260);
-    if (lf !== this.lavaFrame) {
-      this.lavaFrame = lf;
-      for (const l of this.lava) l.img.setTexture(`lava${(lf + l.tx * 2 + l.ty) % 3}`);
+    } else if (s.held) {
+      // Throw arc preview.
+      let px = me.x;
+      let py = me.y - KIT.ogre.h - 2;
+      let vx = Math.cos(aim) * 600 + s.vx * 0.5;
+      let vy = Math.sin(aim) * 600;
+      const ctx = client.ctxAt(client.tl.renderTick);
+      g.fillStyle(COL.gold, 0.8);
+      for (let i = 0; i < 90; i++) {
+        vy += GRAV / 60;
+        px += vx / 60;
+        py += vy / 60;
+        if (ctx && overlapsSolid(ctx, px - 5, py - 14, px + 5, py)) break;
+        if (i % 3 === 0) g.fillRect(px - 0.5, py - 7, 1, 1);
+      }
     }
-    const tt = now / 1000;
-    for (let i = 0; i < this.lavaGlows.length; i++) this.lavaGlows[i].setAlpha(0.28 + Math.sin(tt * 3 + i) * 0.08);
-    if (this.lava.length && Math.random() < 0.25) {
-      const l = this.lava[(Math.random() * this.lava.length) | 0];
-      this.fx.embers(l.tx * TILE + 8, l.ty * TILE + 8, 1);
-    }
-    if (this.stairsGlow?.visible) this.stairsGlow.setAlpha(0.5 + Math.sin(tt * 4) * 0.25);
   }
 
-  drawIndicators(s: WorldView | null, meView: View | undefined) {
-    const targets: { x: number; y: number; c: number }[] = [];
-    if (s && meView) {
-      if (s.stairs) targets.push({ ...this.stairsPos, c: 0xffd23f });
-      if (this.rig.mode.k !== 'self') targets.push({ x: meView.x, y: meView.y, c: 0xffffff });
-      for (const p of s.players) if (p.id !== this.client.myId) targets.push({ x: p.x, y: p.y, c: hex(PLAYER_COLORS[p.c]) });
-      if (!s.stairs && s.enemies.length <= 3)
-        for (const e of s.enemies) if (this.client.fog.visibleAt(e.x, e.y)) targets.push({ x: e.x, y: e.y, c: 0xff3355 });
+  private stepFx(dt: number) {
+    for (const f of this.fx) {
+      f.vy += f.g * dt;
+      f.x += f.vx * dt;
+      f.y += f.vy * dt;
+      f.life -= dt;
     }
-    const view = this.cameras.main.worldView;
-    let i = 0;
-    for (const tg of targets) {
-      if (view.contains(tg.x, tg.y) || !meView) continue;
-      const cx = view.centerX;
-      const cy = view.centerY;
-      const a = Math.atan2(tg.y - cy, tg.x - cx);
-      const m = 10 / this.baseZoom + 6;
-      const hw = view.width / 2 - m;
-      const hh = view.height / 2 - m;
-      const k = Math.min(hw / Math.abs(Math.cos(a) || 1e-6), hh / Math.abs(Math.sin(a) || 1e-6));
-      const arrow = this.arrows[i] ?? (this.arrows[i] = this.add.image(0, 0, 'arrow').setDepth(990));
-      arrow
-        .setVisible(true)
-        .setPosition(cx + Math.cos(a) * k, cy + Math.sin(a) * k)
-        .setRotation(a + Math.PI / 2)
-        .setTint(tg.c);
-      i++;
+    this.fx = this.fx.filter((f) => f.life > 0);
+    for (const r of this.rings) {
+      r.life -= dt;
+      r.r += dt * 160;
     }
-    for (; i < this.arrows.length; i++) this.arrows[i].setVisible(false);
+    this.rings = this.rings.filter((r) => r.life > 0);
+  }
+
+  private drawFx() {
+    const g = this.top;
+    for (const f of this.fx) {
+      g.fillStyle(f.color, Math.min(1, (f.life / f.max) * 1.5));
+      g.fillRect(f.x - f.size / 2, f.y - f.size / 2, f.size, f.size);
+    }
+    for (const r of this.rings) {
+      g.lineStyle(2, r.color, r.life / r.max);
+      g.strokeEllipse(r.x, r.y, r.r * 2, r.r * 0.6);
+    }
+  }
+
+  private updateNames(pos: Map<number, PlayerView>) {
+    const { client } = this.boot;
+    const seen = new Set<number>();
+    for (const p of pos.values()) {
+      if (p.off || p.id === client.myId) continue;
+      seen.add(p.id);
+      let t = this.names.get(p.id);
+      const name = client.meta.get(p.id)?.name ?? '';
+      if (!t) {
+        t = this.add
+          .text(0, 0, name, { fontFamily: 'ui-monospace, Menlo, monospace', fontSize: '5px', color: PLAYER_COLORS[p.c] ?? '#fff', stroke: '#14101c', strokeThickness: 2, resolution: this.zoom * devicePixelRatio * 2 })
+          .setOrigin(0.5, 1)
+          .setDepth(5);
+        this.names.set(p.id, t);
+      }
+      if (t.text !== name) t.setText(name);
+      t.setPosition(p.x, p.y - KIT[p.char].h - (p.heavy ? 13 : 3));
+    }
+    for (const [id, t] of this.names)
+      if (!seen.has(id)) {
+        t.destroy();
+        this.names.delete(id);
+      }
   }
 }

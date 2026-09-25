@@ -4,11 +4,9 @@ import { existsSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { TICK_RATE, type ClientMsg } from '../shared/protocol.ts';
-import { Room } from './game.ts';
+import { Room, SEND_EVERY } from './room.ts';
 
 const PORT = Number(process.env.PORT ?? 47291);
-/** Send a snapshot every N simulation ticks (1 = 30 Hz, 2 = 15 Hz). */
-const SEND_EVERY = Math.max(1, Number(process.env.SEND_EVERY) || 1);
 const DIST = join(import.meta.dirname, '..', 'dist');
 const MIME: Record<string, string> = {
   '.html': 'text/html',
@@ -110,16 +108,14 @@ setInterval(() => {
 
 const TICK_MS = 1000 / TICK_RATE;
 let next = performance.now();
-let ticks = 0;
 function loop() {
   const now = performance.now();
   if (now - next > 1000) next = now;
   while (now >= next) {
     next += TICK_MS;
-    ticks++;
     for (const [code, r] of rooms) {
       r.step();
-      if (ticks % SEND_EVERY === 0) r.sendSnapshots();
+      r.sendSnapshots();
       if (r.empty) {
         rooms.delete(code);
         console.log(`room ${code} closed`);
@@ -130,4 +126,4 @@ function loop() {
 }
 loop();
 
-http.listen(PORT, () => console.log(`Boneyard server on http://localhost:${PORT} (ws: /ws, ${TICK_RATE} Hz sim, ${TICK_RATE / SEND_EVERY} Hz snapshots)`));
+http.listen(PORT, () => console.log(`Genesis server on http://localhost:${PORT} (ws: /ws, ${TICK_RATE} Hz sim, ${TICK_RATE / SEND_EVERY} Hz snapshots)`));

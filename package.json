@@ -1,7 +1,7 @@
 {
-  "name": "boneyard",
-  "version": "1.0.0",
-  "description": "Browser co-op roguelike dungeon crawler (Phaser + authoritative Node WebSocket server)",
+  "name": "genesis",
+  "version": "0.1.0",
+  "description": "Browser co-op puzzle platformer (Phaser + authoritative Node WebSocket server)",
   "scripts": {
     "dev": "concurrently -k -n server,client -c magenta,cyan \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "tsx watch server/index.ts",
@@ -9,11 +9,7 @@
     "build": "vite build",
     "start": "tsx server/index.ts",
     "typecheck": "tsc",
-    "test": "tsx scripts/vision-test.ts && tsx scripts/fog-test.ts"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://origin.cursor.com/git/alex-doliner/tmp-e5f97fe8d5afe21b.git"
+    "test": "tsx scripts/sim-test.ts"
   },
   "license": "MIT",
   "dependencies": {
