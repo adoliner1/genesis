@@ -73,7 +73,7 @@ func _update_help() -> void:
 			walls = "Wall: hold toward a wall to slide, Space to kick off"
 		MovementStats.WallMode.CLIMB:
 			walls = "Wall: W into a wall to climb, S to climb down, Space to hop off"
-	help.text = "%s\nA/D move · Shift walk · Space jump (hold = higher) · S in air fast-falls · S+Space drops through ledges\n%s\nTab switch character · R respawn · F1 tuning panel" % [
+	help.text = "%s\nA/D move · Shift sprint · Ctrl walk · S crouch (in air: fast-fall) · Space jump (hold = higher) · S+Space drops through ledges\n%s\nTab switch character · R respawn · F1 tuning panel" % [
 		c.stats.display_name.to_upper(), walls]
 
 

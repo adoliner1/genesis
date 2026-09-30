@@ -17,9 +17,11 @@ There's no build step: pull the latest and press F5 again.
 | Key | Action |
 | --- | --- |
 | A / D | Move |
-| Shift | Walk (slow) |
-| Space | Jump (hold for a higher jump) |
+| Shift | Sprint |
+| Ctrl | Walk (slow) |
+| S (on the ground) | Crouch (stays down under low ceilings) |
 | S (in the air) | Fast-fall |
+| Space | Jump (hold for a higher jump) |
 | S + Space | Drop through a one-way ledge |
 | W / S at a wall | Ogre: climb up / down |
 | Hold toward a wall | Rogue: wall-slide (Space to kick off) |
@@ -36,7 +38,7 @@ Every character runs the same movement code (`game/character.gd`). Only its stat
 - The panel shows the computed jump height and distance, and measures your last actual jump.
 - You can also edit the `.tres` files in Godot's inspector.
 
-The test course (`levels/test_course.txt`, edit as ASCII) has pillars 1–6 tiles tall (labeled), pits 3/5/7/9 wide, a 2-tall tunnel only the Rogue fits through, stacked one-way ledges, and a tall shaft for wall-jumping. The faint grid is 1 tile; brighter lines are every 5.
+The test course (`levels/test_course.txt`, edit as ASCII) has pillars 1–6 tiles tall (labeled), a 1-tall crawlspace (crouch; Rogue only), pits 3/5/7/9 wide, a 2-tall tunnel only the Rogue fits through, stacked one-way ledges, and a tall shaft for wall-jumping. The faint grid is 1 tile; brighter lines are every 5.
 
 ## Layout
 

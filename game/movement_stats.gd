@@ -16,7 +16,13 @@ enum WallMode { NONE, WALL_JUMP, CLIMB }
 ## Top running speed (tiles/s).
 @export_range(0.5, 30, 0.1) var run_speed := 8.0
 ## Speed while holding Shift (tiles/s).
+@export_range(0.5, 40, 0.1) var sprint_speed := 12.0
+## Speed while holding Ctrl (tiles/s).
 @export_range(0.5, 30, 0.1) var walk_speed := 3.0
+## Speed while crouched (hold S on the ground).
+@export_range(0.2, 20, 0.1) var crouch_speed := 2.5
+## Height while crouched, in tiles. Under 1 fits a 1-tall crawlspace.
+@export_range(0.5, 4, 0.05) var crouch_height := 0.9
 ## Speeding up toward run speed (tiles/s²).
 @export_range(1, 400, 1) var ground_accel := 60.0
 ## Slowing down with no input (tiles/s²). Low = slidey.

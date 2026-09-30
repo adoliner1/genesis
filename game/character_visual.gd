@@ -50,7 +50,7 @@ func _process(delta: float) -> void:
 
 func _draw() -> void:
 	var s := body.stats
-	var size := s.body_size * Character.TILE
+	var size := body.current_size()
 	var f := float(body.facing)
 	var rect := Rect2(Vector2(-size.x / 2, -size.y), size)
 	var col := s.color

@@ -77,15 +77,48 @@ func run_all() -> void:
 		var hop := (start - peak) / T
 		check("%s short hop is lower" % s.display_name, hop < h * 0.7, "%.2f tiles" % hop)
 
-		c.position = Vector2(79 * T, floor_y)  # flat run-up strip
+		c.position = Vector2(89 * T, floor_y)  # flat run-up strip
 		c.velocity = Vector2.ZERO
 		sim(c, 1.2, func(i: PlayerInput, _t): i.move_x = 1.0)
 		check("%s reaches run speed" % s.display_name, absf(c.velocity.x / T - s.run_speed) < 0.1,
 				"%.2f tiles/s" % (c.velocity.x / T))
 		c.queue_free()
 
-	# Rogue: kick off the shaft wall (inner x 114..118, wall on the left at x=113).
-	var r := spawn("res://characters/rogue.tres", Vector2(114.45 * T, 20 * T))
+	# Sprint and crouch speeds, from the run-up strip.
+	for path in ["res://characters/rogue.tres", "res://characters/ogre.tres"]:
+		var c := spawn(path, Vector2(89 * T, floor_y))
+		sim(c, 0.2, func(_i, _t): pass)
+		sim(c, 1.0, func(i: PlayerInput, _t): i.move_x = 1.0; i.sprint = true)
+		check("%s reaches sprint speed" % c.stats.display_name, absf(c.velocity.x / T - c.stats.sprint_speed) < 0.1,
+				"%.2f tiles/s" % (c.velocity.x / T))
+		c.position = Vector2(89 * T, floor_y)
+		sim(c, 1.0, func(i: PlayerInput, _t): i.move_x = 1.0; i.down = true)
+		check("%s crouch-walks" % c.stats.display_name, c.crouching and absf(c.velocity.x / T - c.stats.crouch_speed) < 0.1,
+				"crouching=%s, %.2f tiles/s" % [c.crouching, c.velocity.x / T])
+		c.queue_free()
+
+	# Crawlspace (x 42..48, 1 tile tall): rogue crouch-crawls through, stays down
+	# inside after letting go of S; ogre is blocked.
+	for path in ["res://characters/rogue.tres", "res://characters/ogre.tres"]:
+		var c := spawn(path, Vector2(39 * T, floor_y))
+		sim(c, 0.2, func(_i, _t): pass)
+		var rogue := c.stats.display_name == "Rogue"
+		sim(c, 2.0, func(i: PlayerInput, _t): i.move_x = 1.0; i.down = true)
+		var inside := c.position.x > 43 * T and c.position.x < 48 * T
+		sim(c, 0.1, func(i: PlayerInput, _t): pass)
+		var still_down := c.crouching
+		sim(c, 1.5, func(i: PlayerInput, _t): i.move_x = 1.0)
+		if rogue:
+			check("Rogue crawls into the crawlspace", inside and still_down,
+					"inside=%s, stays crouched after release=%s" % [inside, still_down])
+			check("Rogue comes out the far side and stands", c.position.x > 49 * T and not c.crouching,
+					"x=%.1f crouching=%s" % [c.position.x / T, c.crouching])
+		else:
+			check("Ogre is blocked by the crawlspace", c.position.x < 42 * T, "x=%.1f" % (c.position.x / T))
+		c.queue_free()
+
+	# Rogue: kick off the shaft wall (inner x 124..128, wall on the left at x=123).
+	var r := spawn("res://characters/rogue.tres", Vector2(124.45 * T, 20 * T))
 	sim(r, 0.1, func(i: PlayerInput, _t): i.move_x = -1.0)
 	check("Rogue wall-slides", r.wall_sliding, "vy=%.1f tiles/s" % (r.velocity.y / T))
 	sim(r, DT, func(i: PlayerInput, _t): i.move_x = -1.0; i.jump_pressed = true; i.jump_held = true)
@@ -93,7 +126,7 @@ func run_all() -> void:
 			"v=(%.1f, %.1f)" % [r.velocity.x / T, r.velocity.y / T])
 
 	# Rogue climbs the shaft by alternating wall jumps.
-	r.position = Vector2(116 * T, floor_y)
+	r.position = Vector2(126 * T, floor_y)
 	r.velocity = Vector2.ZERO
 	var dir := [1.0]
 	var top := sim(r, 6.0, func(i: PlayerInput, _t):
@@ -105,18 +138,18 @@ func run_all() -> void:
 	check("Rogue wall-jumps up the shaft", (floor_y - top) / T > 12, "rose %.1f tiles" % ((floor_y - top) / T))
 	r.queue_free()
 
-	# Rogue fits through the 2-tall tunnel (x 90..96); the ogre does not.
+	# Rogue fits through the 2-tall tunnel (x 100..106); the ogre does not.
 	for path in ["res://characters/rogue.tres", "res://characters/ogre.tres"]:
-		var c := spawn(path, Vector2(86 * T, floor_y))
+		var c := spawn(path, Vector2(96 * T, floor_y))
 		sim(c, 4.0, func(i: PlayerInput, _t): i.move_x = 1.0)
-		var through := c.position.x > 98 * T
+		var through := c.position.x > 108 * T
 		var rogue := c.stats.display_name == "Rogue"
 		check("%s %s the low tunnel" % [c.stats.display_name, "fits through" if rogue else "is blocked by"],
 				through == rogue, "x=%.1f" % (c.position.x / T))
 		c.queue_free()
 
-	# Ogre climbs the 6-tall block face (x=90, top at y=22) and hauls onto it.
-	var o := spawn("res://characters/ogre.tres", Vector2(89.0 * T - 1, floor_y))
+	# Ogre climbs the 6-tall block face (x=100, top at y=22) and hauls onto it.
+	var o := spawn("res://characters/ogre.tres", Vector2(99.0 * T - 1, floor_y))
 	sim(o, 0.2, func(i: PlayerInput, _t): pass)
 	var climbed := [false]
 	var on_top := [false]
@@ -130,7 +163,7 @@ func run_all() -> void:
 	o.queue_free()
 
 	# Ogre hard landing staggers.
-	o = spawn("res://characters/ogre.tres", Vector2(40 * T, 10 * T))
+	o = spawn("res://characters/ogre.tres", Vector2(50 * T, 10 * T))
 	sim(o, 2.0, func(i: PlayerInput, _t): pass)
 	check("Ogre hard landing", o.last_impact >= o.stats.hard_landing_speed, "impact %.1f tiles/s" % o.last_impact)
 	o.queue_free()

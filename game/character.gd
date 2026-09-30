@@ -18,6 +18,8 @@ var facing := 1
 
 # State readable by the visual and the tuning panel.
 var climbing := false
+var crouching := false
+var sprinting := false
 var wall_sliding := false
 var climb_phase := 0.0
 var stagger_left := 0.0
@@ -45,8 +47,16 @@ func _ready() -> void:
 	apply_body_size()
 
 
+## Collision size in pixels; shorter while crouching.
+func current_size() -> Vector2:
+	var size := stats.body_size
+	if crouching:
+		size.y = minf(stats.crouch_height, size.y)
+	return size * TILE
+
+
 func apply_body_size() -> void:
-	var size := stats.body_size * TILE
+	var size := current_size()
 	(_shape.shape as RectangleShape2D).size = size
 	# Origin sits at the feet so spawn points and visuals line up with the floor.
 	_shape.position = Vector2(0, -size.y / 2)
@@ -78,6 +88,7 @@ func step(delta: float) -> void:
 		move_x = 0.0
 
 	_update_climb(on_floor, move_x)
+	_update_crouch(on_floor)
 	wall_sliding = (s.wall_mode == MovementStats.WallMode.WALL_JUMP and not on_floor
 			and _wall_dir != 0 and signf(move_x) == _wall_dir and velocity.y > 0.0)
 
@@ -87,9 +98,9 @@ func step(delta: float) -> void:
 		_horizontal(delta, on_floor, move_x)
 		_gravity(delta, on_floor)
 
+	_try_drop_through(on_floor)
 	if stagger_left <= 0.0:
 		_try_jump(on_floor)
-	_try_drop_through(on_floor)
 
 	if move_x != 0.0 and not climbing and _control_lock_left <= 0.0:
 		facing = int(signf(move_x))
@@ -116,7 +127,14 @@ func _tick_timers(delta: float) -> void:
 
 func _horizontal(delta: float, on_floor: bool, move_x: float) -> void:
 	var s := stats
-	var speed := s.walk_speed if input.walk else s.run_speed
+	var speed := s.run_speed
+	if crouching:
+		speed = s.crouch_speed
+	elif input.walk:
+		speed = s.walk_speed
+	elif input.sprint:
+		speed = s.sprint_speed
+	sprinting = input.sprint and not crouching and not input.walk and move_x != 0.0
 	var target := move_x * speed * TILE
 	var accel: float
 	var friction := s.ground_friction if on_floor else s.air_friction
@@ -180,6 +198,10 @@ func _try_jump(on_floor: bool) -> void:
 		climbing = false
 		_wall_coyote_left = 0.0
 	elif _coyote_left > 0.0:
+		if crouching:
+			if not _can_stand():
+				return
+			_set_crouching(false)
 		velocity.y = -jump_velocity(s.jump_height)
 		climbing = false
 	elif _air_jumps_left > 0:
@@ -214,6 +236,26 @@ func _on_landed(impact: float) -> void:
 		stagger_left = stats.landing_stagger
 		velocity.x = 0.0
 	landed.emit(impact)
+
+
+# --- crouch ------------------------------------------------------------------
+
+func _update_crouch(on_floor: bool) -> void:
+	# S crouches on the ground (in the air it fast-falls instead). Stay down
+	# while a ceiling is in the way.
+	var want := on_floor and input.down and not climbing
+	if want != crouching and (want or _can_stand()):
+		_set_crouching(want)
+
+
+func _set_crouching(on: bool) -> void:
+	crouching = on
+	apply_body_size()
+
+
+func _can_stand() -> bool:
+	var rise := stats.body_size.y * TILE - current_size().y
+	return rise <= 0.0 or not test_move(global_transform, Vector2(0, -rise))
 
 
 # --- walls --------------------------------------------------------------------
