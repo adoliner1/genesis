@@ -1,0 +1,26 @@
+; Engine configuration file.
+; Open this folder in Godot 4.7 (standard, not .NET) and press F5.
+
+config_version=5
+
+[application]
+
+config/name="Genesis"
+config/description="Co-op side-view stealth platformer (movement prototype)"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.7")
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[physics]
+
+common/physics_interpolation=true
+
+[rendering]
+
+textures/canvas_textures/default_texture_filter=0

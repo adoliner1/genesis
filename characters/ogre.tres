@@ -1,0 +1,44 @@
+[gd_resource type="Resource" script_class="MovementStats" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://game/movement_stats.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+display_name = "Ogre"
+color = Color(0.56, 0.43, 0.3, 1)
+body_size = Vector2(1.8, 2.8)
+run_speed = 4.5
+walk_speed = 2.0
+ground_accel = 18.0
+ground_friction = 60.0
+turn_accel = 30.0
+air_accel = 12.0
+air_friction = 25.0
+air_turn_accel = 15.0
+jump_height = 2.2
+jump_time_to_apex = 0.34
+fall_gravity_mult = 2.2
+jump_cut_gravity_mult = 2.0
+apex_threshold = 1.0
+apex_gravity_mult = 0.9
+max_fall_speed = 28.0
+fast_fall_speed = 34.0
+air_jumps = 0
+coyote_time = 0.08
+jump_buffer = 0.12
+weight = 2.5
+hard_landing_speed = 24.0
+landing_stagger = 0.25
+landing_shake = 0.8
+wall_mode = 2
+wall_jump_height = 1.2
+wall_jump_push = 5.0
+wall_jump_control_lock = 0.1
+wall_coyote_time = 0.05
+climb_speed = 1.6
+climb_step_time = 0.5
+climb_rest = 0.35
+climb_down_speed = 3.5
+waddle = 0.12
+bob = 2.5
+lean = 0.0

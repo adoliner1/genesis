@@ -1,0 +1,41 @@
+[gd_resource type="Resource" script_class="MovementStats" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://game/movement_stats.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+display_name = "Rogue"
+color = Color(0.33, 0.72, 0.66, 1)
+body_size = Vector2(0.8, 1.8)
+run_speed = 9.0
+walk_speed = 3.5
+ground_accel = 70.0
+ground_friction = 45.0
+turn_accel = 110.0
+air_accel = 50.0
+air_friction = 8.0
+air_turn_accel = 70.0
+jump_height = 4.2
+jump_time_to_apex = 0.36
+fall_gravity_mult = 1.5
+jump_cut_gravity_mult = 2.5
+apex_threshold = 2.5
+apex_gravity_mult = 0.55
+max_fall_speed = 20.0
+fast_fall_speed = 30.0
+air_jumps = 0
+coyote_time = 0.1
+jump_buffer = 0.12
+weight = 0.7
+hard_landing_speed = 60.0
+landing_stagger = 0.0
+landing_shake = 0.15
+wall_mode = 1
+wall_slide_speed = 5.0
+wall_jump_height = 3.4
+wall_jump_push = 11.0
+wall_jump_control_lock = 0.14
+wall_coyote_time = 0.1
+waddle = 0.0
+bob = 1.0
+lean = 0.12
