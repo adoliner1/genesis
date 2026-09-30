@@ -1,6 +1,7 @@
-[gd_resource type="Resource" script_class="MovementStats" load_steps=2 format=3]
+[gd_resource type="Resource" script_class="MovementStats" load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://game/movement_stats.gd" id="1"]
+[ext_resource type="SpriteFrames" path="res://art/characters/ogre_frames.tres" id="2"]
 
 [resource]
 script = ExtResource("1")
@@ -48,6 +49,8 @@ can_ledge_grab = true
 ledge_grab_reach = 0.6
 ledge_climb_time = 0.45
 ledge_jump_height = 1.8
+sprite_frames = ExtResource("2")
+sprite_offset = Vector2(0, 2)
 waddle = 0.12
 bob = 2.5
 lean = 0.0

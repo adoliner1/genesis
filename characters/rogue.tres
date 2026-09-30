@@ -1,6 +1,7 @@
-[gd_resource type="Resource" script_class="MovementStats" load_steps=2 format=3]
+[gd_resource type="Resource" script_class="MovementStats" load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://game/movement_stats.gd" id="1"]
+[ext_resource type="SpriteFrames" path="res://art/characters/rogue_frames.tres" id="2"]
 
 [resource]
 script = ExtResource("1")
@@ -45,6 +46,9 @@ can_ledge_grab = true
 ledge_grab_reach = 0.5
 ledge_climb_time = 0.18
 ledge_jump_height = 3.5
+sprite_frames = ExtResource("2")
+sprite_offset = Vector2(-1, 1)
+sprite_faces_right = false
 waddle = 0.0
 bob = 1.0
 lean = 0.12

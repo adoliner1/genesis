@@ -1,5 +1,4 @@
 # Godot
 .godot/
-*.import
 export_presets.cfg
 *.tmp
