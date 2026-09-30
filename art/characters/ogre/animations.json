@@ -1,0 +1,10 @@
+{
+	"idle": { "src": "idle", "fps": 4 },
+	"run": { "src": "run", "fps": 10 },
+	"crawl": { "src": "crawl", "fps": 8 },
+	"crouch": { "src": "crouch", "frames": [2, 3, 4], "fps": 14, "loop": false },
+	"jump_squat": { "src": "jump", "frames": [1, 2], "fps": 20, "loop": false },
+	"rise": { "src": "jump", "frames": [3, 4], "fps": 8, "loop": false },
+	"fall": { "src": "jump", "frames": [5], "fps": 10, "loop": false },
+	"land": { "src": "jump", "frames": [7, 8], "fps": 14, "loop": false }
+}

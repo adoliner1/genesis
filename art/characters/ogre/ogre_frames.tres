@@ -1,0 +1,149 @@
+[gd_resource type="SpriteFrames" format=3]
+
+[ext_resource type="Texture2D" path="res://art/characters/ogre/crawl_0.png" id="1_e7wdn"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/crawl_1.png" id="2_3841p"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/crawl_2.png" id="3_aw5uj"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/crawl_3.png" id="4_8rl3n"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/crawl_4.png" id="5_sgsyx"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/crawl_5.png" id="6_ssfwy"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/crouch_0.png" id="7_x06kt"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/crouch_1.png" id="8_fynix"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/crouch_2.png" id="9_oxq3o"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/fall_0.png" id="10_qry05"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/idle_0.png" id="11_vum5m"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/idle_1.png" id="12_eawru"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/idle_2.png" id="13_y2r6e"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/idle_3.png" id="14_wwu4o"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/jump_squat_0.png" id="15_08s6b"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/jump_squat_1.png" id="16_br2sa"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/land_0.png" id="17_7262a"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/land_1.png" id="18_bj5jr"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/rise_0.png" id="19_p6w6y"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/rise_1.png" id="20_wipln"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/run_0.png" id="21_c30h1"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/run_1.png" id="22_3s6cn"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/run_2.png" id="23_vj12w"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/run_3.png" id="24_qwtgu"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/run_4.png" id="25_gd23b"]
+[ext_resource type="Texture2D" path="res://art/characters/ogre/run_5.png" id="26_kcj8f"]
+
+[resource]
+animations = [{
+"frames": [{
+"duration": 1.0,
+"texture": ExtResource("1_e7wdn")
+}, {
+"duration": 1.0,
+"texture": ExtResource("2_3841p")
+}, {
+"duration": 1.0,
+"texture": ExtResource("3_aw5uj")
+}, {
+"duration": 1.0,
+"texture": ExtResource("4_8rl3n")
+}, {
+"duration": 1.0,
+"texture": ExtResource("5_sgsyx")
+}, {
+"duration": 1.0,
+"texture": ExtResource("6_ssfwy")
+}],
+"loop": 1,
+"name": &"crawl",
+"speed": 8.0
+}, {
+"frames": [{
+"duration": 1.0,
+"texture": ExtResource("7_x06kt")
+}, {
+"duration": 1.0,
+"texture": ExtResource("8_fynix")
+}, {
+"duration": 1.0,
+"texture": ExtResource("9_oxq3o")
+}],
+"loop": 0,
+"name": &"crouch",
+"speed": 14.0
+}, {
+"frames": [{
+"duration": 1.0,
+"texture": ExtResource("10_qry05")
+}],
+"loop": 0,
+"name": &"fall",
+"speed": 10.0
+}, {
+"frames": [{
+"duration": 1.0,
+"texture": ExtResource("11_vum5m")
+}, {
+"duration": 1.0,
+"texture": ExtResource("12_eawru")
+}, {
+"duration": 1.0,
+"texture": ExtResource("13_y2r6e")
+}, {
+"duration": 1.0,
+"texture": ExtResource("14_wwu4o")
+}],
+"loop": 1,
+"name": &"idle",
+"speed": 4.0
+}, {
+"frames": [{
+"duration": 1.0,
+"texture": ExtResource("15_08s6b")
+}, {
+"duration": 1.0,
+"texture": ExtResource("16_br2sa")
+}],
+"loop": 0,
+"name": &"jump_squat",
+"speed": 20.0
+}, {
+"frames": [{
+"duration": 1.0,
+"texture": ExtResource("17_7262a")
+}, {
+"duration": 1.0,
+"texture": ExtResource("18_bj5jr")
+}],
+"loop": 0,
+"name": &"land",
+"speed": 14.0
+}, {
+"frames": [{
+"duration": 1.0,
+"texture": ExtResource("19_p6w6y")
+}, {
+"duration": 1.0,
+"texture": ExtResource("20_wipln")
+}],
+"loop": 0,
+"name": &"rise",
+"speed": 8.0
+}, {
+"frames": [{
+"duration": 1.0,
+"texture": ExtResource("21_c30h1")
+}, {
+"duration": 1.0,
+"texture": ExtResource("22_3s6cn")
+}, {
+"duration": 1.0,
+"texture": ExtResource("23_vj12w")
+}, {
+"duration": 1.0,
+"texture": ExtResource("24_qwtgu")
+}, {
+"duration": 1.0,
+"texture": ExtResource("25_gd23b")
+}, {
+"duration": 1.0,
+"texture": ExtResource("26_kcj8f")
+}],
+"loop": 1,
+"name": &"run",
+"speed": 10.0
+}]

@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://c6edeetiifsnj"
-path="res://.godot/imported/ogre.png-395887768c4f3a0f848b8b016939fd73.ctex"
+uid="uid://cdlrk1dht1lja"
+path="res://.godot/imported/run_2.png-11a809ddbba9e11d145d8c844b41c821.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://art/characters/ogre.png"
-dest_files=["res://.godot/imported/ogre.png-395887768c4f3a0f848b8b016939fd73.ctex"]
+source_file="res://art/characters/ogre/run_2.png"
+dest_files=["res://.godot/imported/run_2.png-11a809ddbba9e11d145d8c844b41c821.ctex"]
 
 [params]
 
