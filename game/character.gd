@@ -10,7 +10,7 @@ signal anim_changed(anim: Anim)
 ## What the body is doing, for visuals and sound. Sprite animations are named
 ## after these in snake_case (see anim_name()); visuals never read physics state.
 enum Anim {
-	IDLE, WALK, RUN, SPRINT, SKID, CROUCH, CRAWL,
+	IDLE, WALK, RUN, SPRINT, DASH, SKID, CROUCH, CRAWL,
 	JUMP_SQUAT, RISE, FALL, FAST_FALL, LAND, STAGGER,
 	WALL_SLIDE, CLIMB, CLIMB_IDLE, HANG, PULL_UP,
 }
@@ -43,6 +43,9 @@ var jump_squat_left := 0.0
 var anim := Anim.IDLE
 var anim_time := 0.0  # seconds in the current anim
 var stagger_left := 0.0
+var dash_left := 0.0  # in the dash window: a fresh opposite press re-dashes instantly
+var skid_left := 0.0  # braking out of a run; input ignored
+var landing_lag_left := 0.0
 var last_impact := 0.0
 
 var _coyote_left := 0.0
@@ -61,6 +64,7 @@ var _pull_t := 0.0
 var _pull_from := Vector2.ZERO
 var _pull_to := Vector2.ZERO
 var _land_anim_left := 0.0
+var _prev_dir := 0  # last tick's held direction, to spot fresh presses
 var _shape: CollisionShape2D
 
 
@@ -124,7 +128,7 @@ func _move(delta: float) -> void:
 		_last_wall_dir = _wall_dir
 
 	var move_x := input.move_x
-	if stagger_left > 0.0:
+	if stagger_left > 0.0 or landing_lag_left > 0.0:
 		move_x = 0.0
 
 	_update_climb(on_floor, move_x)
@@ -139,11 +143,17 @@ func _move(delta: float) -> void:
 		_gravity(delta, on_floor)
 
 	_try_drop_through(on_floor)
-	if stagger_left <= 0.0:
+	if stagger_left <= 0.0 and landing_lag_left <= 0.0:
 		_try_jump(on_floor)
 
-	if move_x != 0.0 and not climbing and _control_lock_left <= 0.0:
+	# Facing only turns on the ground (Smash-style): in the air you drift but
+	# keep facing the way you jumped. A skid turns you once it ends.
+	# Nor during jump squat or the launch tick, so a backward jump stays backward.
+	if (on_floor and move_x != 0.0 and not climbing and skid_left <= 0.0 and jump_squat_left <= 0.0
+			and velocity.y >= 0.0 and _control_lock_left <= 0.0):
 		facing = int(signf(move_x))
+	elif wall_sliding:
+		facing = _wall_dir
 
 	var fall_speed := velocity.y
 	move_and_slide()
@@ -155,7 +165,12 @@ func _move(delta: float) -> void:
 
 func _tick_timers(delta: float) -> void:
 	_coyote_left -= delta
-	_jump_buffer_left -= delta
+	landing_lag_left -= delta
+	# A jump buffered into a landing waits out the landing lag.
+	if landing_lag_left <= 0.0:
+		_jump_buffer_left -= delta
+	dash_left -= delta
+	skid_left -= delta
 	_control_lock_left -= delta
 	_wall_coyote_left -= delta
 	stagger_left -= delta
@@ -183,6 +198,12 @@ func _horizontal(delta: float, on_floor: bool, move_x: float) -> void:
 		elif input.sprint:
 			speed = s.sprint_speed
 	sprinting = on_floor and input.sprint and not crouching and not input.walk and move_x != 0.0
+	_update_dash_skid(on_floor, move_x)
+	if skid_left > 0.0:
+		velocity.x = move_toward(velocity.x, 0.0, s.skid_decel * TILE * delta)
+		return
+	if dash_left > 0.0:
+		speed = maxf(speed, s.dash_speed)
 	var target := move_x * speed * TILE
 	var accel: float
 	var friction := s.ground_friction if on_floor else s.air_friction
@@ -199,6 +220,34 @@ func _horizontal(delta: float, on_floor: bool, move_x: float) -> void:
 	if _control_lock_left > 0.0:
 		accel = 0.0
 	velocity.x = move_toward(velocity.x, target, accel * TILE * delta)
+
+
+## Smash-style ground states. A fresh press from a standstill (or the other
+## way while slow, or during a dash) bursts to dash_speed. Reversing out of a
+## run instead commits to a skid.
+func _update_dash_skid(on_floor: bool, move_x: float) -> void:
+	var s := stats
+	var dir := int(signf(input.move_x))
+	var fresh := dir != 0 and dir != _prev_dir
+	_prev_dir = dir
+	if not on_floor:
+		dash_left = 0.0
+		skid_left = 0.0
+		return
+	if not fresh or move_x == 0.0 or skid_left > 0.0 or crouching or input.walk:
+		return
+	var running := absf(velocity.x) > _run_threshold() * TILE
+	if dash_left <= 0.0 and running and signf(velocity.x) == -dir:
+		skid_left = s.skid_time
+		return
+	dash_left = s.dash_time
+	velocity.x = dir * maxf(s.dash_speed * TILE, velocity.x * dir)
+	facing = dir
+
+
+## Ground speed (tiles/s) above which you count as running rather than walking.
+func _run_threshold() -> float:
+	return (stats.walk_speed + stats.run_speed) / 2.0
 
 
 # --- vertical -----------------------------------------------------------------
@@ -247,7 +296,7 @@ func _try_jump(on_floor: bool) -> void:
 		# during the squat still gives a short hop via jump_cut_gravity_mult.
 		jump_squat_left -= get_physics_process_delta_time()
 		if jump_squat_left <= 0.0:
-			velocity.y = -jump_velocity(s.jump_height)
+			_ground_takeoff()
 		return
 	if _jump_buffer_left <= 0.0:
 		return
@@ -265,10 +314,12 @@ func _try_jump(on_floor: bool) -> void:
 				return
 			_set_crouching(false)
 		climbing = false
+		skid_left = 0.0
+		dash_left = 0.0
 		if on_floor and s.jump_squat > 0.0:
 			jump_squat_left = s.jump_squat
 		else:
-			velocity.y = -jump_velocity(s.jump_height)
+			_ground_takeoff()
 	elif _air_jumps_left > 0:
 		_air_jumps_left -= 1
 		velocity.y = -jump_velocity(s.jump_height)
@@ -277,6 +328,17 @@ func _try_jump(on_floor: bool) -> void:
 	_jump_buffer_left = 0.0
 	_coyote_left = 0.0
 	fast_falling = false
+
+
+## Jump off the ground. Horizontal speed is set here, Smash-style: keep part of
+## the ground speed and add the held direction, so holding back out of a run
+## jumps backward. After this, air drift only nudges it.
+func _ground_takeoff() -> void:
+	var s := stats
+	velocity.y = -jump_velocity(s.jump_height)
+	var cap := s.jump_max_speed * TILE
+	var vx := velocity.x * s.jump_momentum + signf(input.move_x) * s.jump_steer * TILE
+	velocity.x = clampf(vx, -cap, cap)
 
 
 func _try_drop_through(on_floor: bool) -> void:
@@ -299,9 +361,11 @@ func _standing_on_one_way() -> bool:
 func _on_landed(impact: float) -> void:
 	last_impact = impact
 	_land_anim_left = LAND_ANIM_TIME
+	# Air speed carries into the landing; ground_friction bleeds it off while
+	# the lag holds input.
+	landing_lag_left = stats.landing_lag
 	if impact >= stats.hard_landing_speed:
 		stagger_left = stats.landing_stagger
-		velocity.x = 0.0
 	landed.emit(impact)
 
 
@@ -396,40 +460,51 @@ func _mantle() -> void:
 
 # --- ledges -------------------------------------------------------------------
 
-## Falling past a ledge corner we're facing catches it: hang with the head just
-## under the lip. Hold S to fall past without grabbing.
+## Falling past a ledge corner catches it, whichever way you face (facing is
+## locked in the air): hang with the head just under the lip. Hold S to fall
+## past, or hold away from a ledge to not grab it.
 func _try_ledge_grab() -> void:
 	var s := stats
 	if (not s.can_ledge_grab or climbing or crouching or input.down or velocity.y < 0.0
 			or _regrab_left > 0.0 or stagger_left > 0.0 or jump_squat_left > 0.0):
 		return
-	if not _touching_wall(facing, global_transform):
-		return
+	var held := int(signf(input.move_x))
+	for dir in [held if held != 0 else facing, -(held if held != 0 else facing)]:
+		if dir != -held and _grab_ledge(dir):
+			return
+
+
+func _grab_ledge(dir: int) -> bool:
+	var s := stats
+	if not _touching_wall(dir, global_transform):
+		return false
 	var size := current_size()
 	var top := global_position.y - size.y
 	var reach := s.ledge_grab_reach * TILE
-	var probe_x := global_position.x + facing * (size.x / 2 + 3)
+	var probe_x := global_position.x + dir * (size.x / 2 + 3)
 	var space := get_world_2d().direct_space_state
 	var from := Vector2(probe_x, top - reach)
 	var pq := PhysicsPointQueryParameters2D.new()
 	pq.position = from
 	pq.collision_mask = 1 << (LAYER_SOLID - 1)
 	if not space.intersect_point(pq, 1).is_empty():
-		return  # hands would be inside the wall: no lip here
+		return false  # hands would be inside the wall: no lip here
 	var rq := PhysicsRayQueryParameters2D.create(from, Vector2(probe_x, top + reach), 1 << (LAYER_SOLID - 1))
 	var hit := space.intersect_ray(rq)
 	if hit.is_empty() or hit.normal.y > -0.7:
-		return
+		return false
 	var lip_y: float = hit.position.y
 	hanging = true
-	_ledge_dir = facing
+	_ledge_dir = dir
+	facing = dir
 	_hang_time = 0.0
 	velocity = Vector2.ZERO
 	fast_falling = false
 	global_position.y = lip_y + LEDGE_HANG_DROP + size.y
 	# Where we'd stand after pulling up: just past the lip, on top.
-	_pull_to = Vector2(probe_x + facing * (size.x / 2 - 2), lip_y)
+	_pull_to = Vector2(probe_x + dir * (size.x / 2 - 2), lip_y)
 	_ledge_can_pull = _fits_at(_pull_to)
+	return true
 
 
 func _fits_at(feet: Vector2) -> bool:
@@ -508,12 +583,14 @@ func _pick_anim() -> Anim:
 	var speed := absf(velocity.x) / TILE
 	if crouching:
 		return Anim.CRAWL if speed > 0.1 else Anim.CROUCH
-	if _land_anim_left > 0.0 and input.move_x == 0.0:
+	if landing_lag_left > 0.0 or (_land_anim_left > 0.0 and input.move_x == 0.0):
 		return Anim.LAND
-	if input.move_x != 0.0 and signf(input.move_x) != signf(velocity.x) and speed > s.run_speed * 0.4:
+	if skid_left > 0.0:
 		return Anim.SKID
 	if speed < 0.1:
 		return Anim.IDLE
+	if dash_left > 0.0:
+		return Anim.DASH
 	if sprinting and speed > s.run_speed * 0.8:
 		return Anim.SPRINT
 	if speed > (s.walk_speed + s.run_speed) / 2.0:

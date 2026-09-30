@@ -131,10 +131,10 @@ func run_all() -> void:
 		var c := spawn(path, Vector2(89 * T, floor_y))
 		var s := c.stats
 		sim(c, 0.2, func(_i, _t): pass)
-		# Standing jump holding sprint + right: air speed caps it, sprint does nothing.
+		# Standing jump, then sprint + right once airborne: air speed caps it, sprint does nothing.
 		var top_vx := [0.0]
 		sim(c, 0.4, func(i: PlayerInput, t: int):
-			i.move_x = 1.0; i.sprint = true; i.jump_held = true; i.jump_pressed = t == 0
+			i.move_x = 1.0 if t >= 10 else 0.0; i.sprint = true; i.jump_held = true; i.jump_pressed = t == 0
 			top_vx[0] = maxf(top_vx[0], c.velocity.x / T))
 		check("%s: sprint does nothing in the air" % s.display_name, top_vx[0] <= s.air_speed + 0.01,
 				"top %.2f tiles/s vs air_speed %.2f" % [top_vx[0], s.air_speed])
@@ -229,8 +229,54 @@ func run_all() -> void:
 	sim(o2, 0.3, func(i: PlayerInput, _t): i.move_x = -1.0)
 	sim(o2, 0.4, func(i: PlayerInput, _t): i.down = true; i.move_x = -1.0)
 	sim(o2, 0.4, func(i: PlayerInput, _t): i.down = true)
-	check("Ogre ground anims", _in_order(seq, ["walk", "run", "sprint", "skid", "crawl", "crouch"]), ", ".join(seq))
+	check("Ogre ground anims", _in_order(seq, ["dash", "sprint", "skid", "crawl", "crouch"]), ", ".join(seq))
 	o2.queue_free()
+
+	# Smash-style ground and air rules.
+	for path in ["res://characters/rogue.tres", "res://characters/ogre.tres"]:
+		var c := spawn(path, Vector2(89 * T, floor_y))
+		var s := c.stats
+		sim(c, 0.2, func(_i, _t): pass)
+		# Dash: the first press bursts straight to dash speed.
+		sim(c, DT, func(i: PlayerInput, _t): i.move_x = 1.0)
+		check("%s dash burst" % s.display_name, c.velocity.x / T >= s.dash_speed - 0.01 and c.dash_left > 0.0,
+				"%.2f tiles/s" % (c.velocity.x / T))
+		# Dash dance: flicking back inside the window bursts the other way at once.
+		sim(c, 3 * DT, func(i: PlayerInput, _t): i.move_x = -1.0)
+		check("%s dash dance" % s.display_name, c.velocity.x / T <= -s.dash_speed + 0.01 and c.facing == -1,
+				"%.2f tiles/s" % (c.velocity.x / T))
+		sim(c, 0.5, func(_i, _t): pass)
+
+		# Reversing out of a run skids: still facing forward, input ignored.
+		c.position = Vector2(89 * T, floor_y)
+		sim(c, 0.8, func(i: PlayerInput, _t): i.move_x = 1.0)
+		sim(c, 2 * DT, func(i: PlayerInput, _t): i.move_x = -1.0)
+		check("%s skids out of a run" % s.display_name, c.skid_left > 0.0 and c.facing == 1 and c.velocity.x > 0.0,
+				"skid=%.2f facing=%d vx=%.1f" % [c.skid_left, c.facing, c.velocity.x / T])
+		sim(c, s.skid_time + 0.1, func(i: PlayerInput, _t): i.move_x = -1.0)
+		check("%s turns after the skid" % s.display_name, c.facing == -1, "facing=%d" % c.facing)
+		sim(c, 0.5, func(_i, _t): pass)
+
+		# Holding back at takeoff out of a run jumps backward; facing stays forward in the air.
+		c.position = Vector2(89 * T, floor_y)
+		sim(c, 0.8, func(i: PlayerInput, _t): i.move_x = 1.0)
+		var run_vx := c.velocity.x
+		sim(c, s.jump_squat + 3 * DT, func(i: PlayerInput, t: int): i.move_x = -1.0; i.jump_held = true; i.jump_pressed = t == 0)
+		check("%s jumps backward out of a run" % s.display_name, not c.is_on_floor() and c.velocity.x < run_vx * s.jump_momentum,
+				"vx %.1f -> %.1f tiles/s" % [run_vx / T, c.velocity.x / T])
+		check("%s keeps facing in the air" % s.display_name, c.facing == 1, "facing=%d" % c.facing)
+
+		# Landing keeps momentum and locks input for the landing lag.
+		var landed_vx := [0.0]
+		var lagged := [false]
+		sim(c, 1.5, func(i: PlayerInput, _t):
+			i.move_x = 1.0
+			if c.landing_lag_left > 0.0 and not lagged[0]:
+				lagged[0] = true
+				landed_vx[0] = c.velocity.x)
+		check("%s landing lag keeps momentum" % s.display_name, lagged[0] and landed_vx[0] != 0.0,
+				"vx at landing %.1f tiles/s" % (landed_vx[0] / T))
+		c.queue_free()
 
 	# Sprite fallback: with only idle/run/fall drawn, every state still resolves.
 	var frames := SpriteFrames.new()
@@ -288,7 +334,7 @@ func run_all() -> void:
 	o.queue_free()
 
 	# Ogre hard landing staggers.
-	o = spawn("res://characters/ogre.tres", Vector2(50 * T, 10 * T))
+	o = spawn("res://characters/ogre.tres", Vector2(50.5 * T, 10 * T))
 	sim(o, 2.0, func(i: PlayerInput, _t): pass)
 	check("Ogre hard landing", o.last_impact >= o.stats.hard_landing_speed, "impact %.1f tiles/s" % o.last_impact)
 	o.queue_free()
