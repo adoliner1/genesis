@@ -99,6 +99,8 @@ func _rebuild() -> void:
 			_add_slider(stats, p)
 		elif p.hint == PROPERTY_HINT_ENUM:
 			_add_enum(stats, p)
+		elif p.type == TYPE_BOOL:
+			_add_toggle(stats, p)
 	_status.text = stats.resource_path
 
 
@@ -137,6 +139,16 @@ func _add_enum(stats: MovementStats, p: Dictionary) -> void:
 	_list.add_child(row)
 
 
+func _add_toggle(stats: MovementStats, p: Dictionary) -> void:
+	var box := CheckBox.new()
+	box.focus_mode = Control.FOCUS_NONE
+	box.text = str(p.name)
+	box.add_theme_font_size_override("font_size", 12)
+	box.button_pressed = stats.get(p.name)
+	box.toggled.connect(func(on: bool) -> void: stats.set(p.name, on))
+	_list.add_child(box)
+
+
 func _fmt(v: float) -> String:
 	return ("%.2f" % v).rstrip("0").rstrip(".")
 
@@ -157,7 +169,7 @@ func _revert() -> void:
 func _copy() -> void:
 	var lines := PackedStringArray()
 	for p in character.stats.get_property_list():
-		if p.hint == PROPERTY_HINT_RANGE or p.hint == PROPERTY_HINT_ENUM:
+		if p.hint == PROPERTY_HINT_RANGE or p.hint == PROPERTY_HINT_ENUM or (p.type == TYPE_BOOL and p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE):
 			lines.append("%s = %s" % [p.name, str(character.stats.get(p.name))])
 	DisplayServer.clipboard_set("\n".join(lines))
 	_status.text = "Copied %d values to clipboard" % lines.size()
@@ -181,7 +193,7 @@ func _derived_text() -> String:
 
 func _measure_jump() -> void:
 	var c := character
-	var on_floor := c.is_on_floor() or c.climbing
+	var on_floor := c.is_on_floor() or c.climbing or c.hanging or c.pulling_up
 	if not _airborne and not on_floor:
 		_airborne = true
 		_takeoff = c.global_position

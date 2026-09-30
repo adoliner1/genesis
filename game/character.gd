@@ -10,6 +10,10 @@ const TILE := 16.0
 const LAYER_SOLID := 1
 const LAYER_ONE_WAY := 2
 const DROP_THROUGH_TIME := 0.2
+const LEDGE_REGRAB_DELAY := 0.3
+const LEDGE_MIN_HANG := 0.12  # before a held direction can pull you up
+## Head sits this far below the lip while hanging, so you can peek over.
+const LEDGE_HANG_DROP := 3.0
 
 @export var stats: MovementStats
 
@@ -23,6 +27,9 @@ var sprinting := false
 var fast_falling := false
 var wall_sliding := false
 var climb_phase := 0.0
+var hanging := false
+var pulling_up := false
+var jump_squat_left := 0.0
 var stagger_left := 0.0
 var last_impact := 0.0
 
@@ -34,6 +41,13 @@ var _wall_dir := 0
 var _wall_coyote_left := 0.0
 var _last_wall_dir := 0
 var _drop_left := 0.0
+var _ledge_dir := 0
+var _ledge_can_pull := false
+var _hang_time := 0.0
+var _regrab_left := 0.0
+var _pull_t := 0.0
+var _pull_from := Vector2.ZERO
+var _pull_to := Vector2.ZERO
 var _shape: CollisionShape2D
 
 
@@ -74,6 +88,9 @@ func step(delta: float) -> void:
 	_tick_timers(delta)
 	if input.jump_pressed:
 		_jump_buffer_left = s.jump_buffer
+	if hanging or pulling_up:
+		_ledge_step(delta)
+		return
 
 	if on_floor:
 		_coyote_left = s.coyote_time
@@ -110,6 +127,8 @@ func step(delta: float) -> void:
 	move_and_slide()
 	if not on_floor and is_on_floor():
 		_on_landed(fall_speed / TILE)
+	elif not is_on_floor():
+		_try_ledge_grab()
 
 
 func _tick_timers(delta: float) -> void:
@@ -118,6 +137,7 @@ func _tick_timers(delta: float) -> void:
 	_control_lock_left -= delta
 	_wall_coyote_left -= delta
 	stagger_left -= delta
+	_regrab_left -= delta
 	if _drop_left > 0.0:
 		_drop_left -= delta
 		if _drop_left <= 0.0:
@@ -198,9 +218,16 @@ func _gravity(delta: float, on_floor: bool) -> void:
 
 
 func _try_jump(on_floor: bool) -> void:
+	var s := stats
+	if jump_squat_left > 0.0:
+		# Crouched for takeoff; launch when the squat ends. Releasing Space
+		# during the squat still gives a short hop via jump_cut_gravity_mult.
+		jump_squat_left -= get_physics_process_delta_time()
+		if jump_squat_left <= 0.0:
+			velocity.y = -jump_velocity(s.jump_height)
+		return
 	if _jump_buffer_left <= 0.0:
 		return
-	var s := stats
 	if (climbing or _wall_coyote_left > 0.0) and not on_floor and s.wall_mode != MovementStats.WallMode.NONE:
 		var away := -_last_wall_dir
 		velocity.y = -jump_velocity(s.wall_jump_height)
@@ -214,8 +241,11 @@ func _try_jump(on_floor: bool) -> void:
 			if not _can_stand():
 				return
 			_set_crouching(false)
-		velocity.y = -jump_velocity(s.jump_height)
 		climbing = false
+		if on_floor and s.jump_squat > 0.0:
+			jump_squat_left = s.jump_squat
+		else:
+			velocity.y = -jump_velocity(s.jump_height)
 	elif _air_jumps_left > 0:
 		_air_jumps_left -= 1
 		velocity.y = -jump_velocity(s.jump_height)
@@ -338,3 +368,83 @@ func _mantle() -> void:
 	velocity.y = -sqrt(2.0 * jump_gravity() * h * 0.8)
 	velocity.x = _wall_dir * stats.run_speed * TILE * 0.5
 	_control_lock_left = 0.15
+
+
+# --- ledges -------------------------------------------------------------------
+
+## Falling past a ledge corner we're facing catches it: hang with the head just
+## under the lip. Hold S to fall past without grabbing.
+func _try_ledge_grab() -> void:
+	var s := stats
+	if (not s.can_ledge_grab or climbing or crouching or input.down or velocity.y < 0.0
+			or _regrab_left > 0.0 or stagger_left > 0.0 or jump_squat_left > 0.0):
+		return
+	if not _touching_wall(facing, global_transform):
+		return
+	var size := current_size()
+	var top := global_position.y - size.y
+	var reach := s.ledge_grab_reach * TILE
+	var probe_x := global_position.x + facing * (size.x / 2 + 3)
+	var space := get_world_2d().direct_space_state
+	var from := Vector2(probe_x, top - reach)
+	var pq := PhysicsPointQueryParameters2D.new()
+	pq.position = from
+	pq.collision_mask = 1 << (LAYER_SOLID - 1)
+	if not space.intersect_point(pq, 1).is_empty():
+		return  # hands would be inside the wall: no lip here
+	var rq := PhysicsRayQueryParameters2D.create(from, Vector2(probe_x, top + reach), 1 << (LAYER_SOLID - 1))
+	var hit := space.intersect_ray(rq)
+	if hit.is_empty() or hit.normal.y > -0.7:
+		return
+	var lip_y: float = hit.position.y
+	hanging = true
+	_ledge_dir = facing
+	_hang_time = 0.0
+	velocity = Vector2.ZERO
+	fast_falling = false
+	global_position.y = lip_y + LEDGE_HANG_DROP + size.y
+	# Where we'd stand after pulling up: just past the lip, on top.
+	_pull_to = Vector2(probe_x + facing * (size.x / 2 - 2), lip_y)
+	_ledge_can_pull = _fits_at(_pull_to)
+
+
+func _fits_at(feet: Vector2) -> bool:
+	var q := PhysicsShapeQueryParameters2D.new()
+	q.shape = _shape.shape
+	q.transform = Transform2D(0.0, feet + _shape.position + Vector2(0, -1))
+	q.collision_mask = 1 << (LAYER_SOLID - 1)
+	return get_world_2d().direct_space_state.intersect_shape(q, 1).is_empty()
+
+
+func _ledge_step(delta: float) -> void:
+	var s := stats
+	if pulling_up:
+		# Haul up first, then over the lip.
+		_pull_t = minf(_pull_t + delta / s.ledge_climb_time, 1.0)
+		var up := minf(_pull_t / 0.6, 1.0)
+		var over := clampf((_pull_t - 0.6) / 0.4, 0.0, 1.0)
+		global_position = Vector2(
+				lerpf(_pull_from.x, _pull_to.x, ease(over, 0.6)),
+				lerpf(_pull_from.y, _pull_to.y, ease(up, 0.5)))
+		if _pull_t >= 1.0:
+			pulling_up = false
+			velocity = Vector2.ZERO
+			_regrab_left = LEDGE_REGRAB_DELAY
+		return
+
+	_hang_time += delta
+	var toward := signf(input.move_x) == _ledge_dir
+	var away := signf(input.move_x) == -_ledge_dir
+	if _jump_buffer_left > 0.0:
+		hanging = false
+		velocity = Vector2(0, -jump_velocity(s.ledge_jump_height))
+		_jump_buffer_left = 0.0
+		_regrab_left = LEDGE_REGRAB_DELAY
+	elif input.down or away:
+		hanging = false
+		_regrab_left = LEDGE_REGRAB_DELAY
+	elif _ledge_can_pull and _hang_time >= LEDGE_MIN_HANG and (input.up or toward):
+		pulling_up = true
+		hanging = false
+		_pull_t = 0.0
+		_pull_from = global_position

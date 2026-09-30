@@ -158,6 +158,56 @@ func run_all() -> void:
 		check("%s: landing ends fast-fall" % s.display_name, c.is_on_floor() and not c.fast_falling, "")
 		c.queue_free()
 
+	# Jump squat: the ogre is still on the ground a few frames after pressing jump.
+	var sq := spawn("res://characters/ogre.tres", Vector2(89 * T, floor_y))
+	sim(sq, 0.2, func(_i, _t): pass)
+	sim(sq, 3 * DT, func(i: PlayerInput, t: int): i.jump_held = true; i.jump_pressed = t == 0)
+	var grounded := sq.is_on_floor() and sq.jump_squat_left > 0.0
+	sim(sq, 0.15, func(i: PlayerInput, _t): i.jump_held = true)
+	check("Ogre jump squat", grounded and not sq.is_on_floor(), "squat %.2fs, grounded during it=%s" % [sq.stats.jump_squat, grounded])
+	sq.queue_free()
+
+	# Ledge grab: jump at a pillar face, catch the lip, then pull up / drop / jump.
+	# Rogue uses pillar 5 (x 32..33, top y=25); ogre pillar 4 (x 27..28, top y=26).
+	for case in [["res://characters/rogue.tres", 30.4, 25], ["res://characters/ogre.tres", 25.0, 26]]:
+		var c := spawn(case[0], Vector2(case[1] * T, floor_y))
+		var name := c.stats.display_name
+		var lip: float = case[2] * T
+		sim(c, 0.2, func(_i, _t): pass)
+		var hung := [false]
+		sim(c, 1.5, func(i: PlayerInput, t: int):
+			i.move_x = 1.0 if t < 20 else 0.0
+			i.jump_held = true; i.jump_pressed = t == 0
+			hung[0] = hung[0] or c.hanging)
+		check("%s grabs the ledge" % name, hung[0] and c.hanging, "hanging=%s" % c.hanging)
+		var head := c.position.y - c.current_size().y
+		check("%s hangs with head just under the lip" % name, head > lip and head - lip < 6, "head %.1f px below lip" % (head - lip))
+		sim(c, 0.6, func(i: PlayerInput, _t): i.up = true)
+		check("%s pulls up onto the ledge" % name, c.is_on_floor() and absf(c.position.y - lip) < 1,
+				"feet y=%.2f tiles" % (c.position.y / T))
+		c.queue_free()
+
+	# Drop from a hang with S, and fall past without grabbing while holding S.
+	var d := spawn("res://characters/rogue.tres", Vector2(30.4 * T, floor_y))
+	sim(d, 0.2, func(_i, _t): pass)
+	sim(d, 1.5, func(i: PlayerInput, t: int): i.move_x = 1.0 if t < 20 else 0.0; i.jump_held = true; i.jump_pressed = t == 0)
+	sim(d, 0.05, func(i: PlayerInput, _t): i.down = true)
+	var dropped := not d.hanging
+	sim(d, 1.0, func(_i, _t): pass)
+	check("Rogue drops from a hang with S", dropped and d.is_on_floor() and not d.hanging, "on floor=%s" % d.is_on_floor())
+	var grabbed := [false]
+	sim(d, 1.5, func(i: PlayerInput, t: int):
+		i.move_x = 1.0 if t < 20 else 0.0; i.jump_held = true; i.jump_pressed = t == 0; i.down = t > 20
+		grabbed[0] = grabbed[0] or d.hanging)
+	check("Holding S falls past ledges", not grabbed[0], "grabbed=%s" % grabbed[0])
+	# Jump from hang.
+	sim(d, 1.5, func(i: PlayerInput, t: int): i.move_x = 1.0 if t < 20 else 0.0; i.jump_held = true; i.jump_pressed = t == 0)
+	var hang_y := d.position.y
+	var jump_peak := sim(d, 0.6, func(i: PlayerInput, t: int): i.jump_held = true; i.jump_pressed = t == 0)
+	check("Rogue jumps from a hang", d.hanging == false and (hang_y - jump_peak) / T > 2.5,
+			"rose %.2f tiles" % ((hang_y - jump_peak) / T))
+	d.queue_free()
+
 	# Rogue: kick off the shaft wall (inner x 124..128, wall on the left at x=123).
 	var r := spawn("res://characters/rogue.tres", Vector2(124.45 * T, 20 * T))
 	sim(r, 0.1, func(i: PlayerInput, _t): i.move_x = -1.0)

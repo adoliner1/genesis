@@ -56,6 +56,9 @@ enum WallMode { NONE, WALL_JUMP, CLIMB }
 ## Tap S at or after the peak of a jump to drop at this speed until you land (Smash-style).
 @export_range(0, 80, 0.5) var fast_fall_speed := 30.0
 @export_range(0, 3, 1) var air_jumps := 0
+## Crouch before leaving the ground (s). Heavier = longer. Release Space
+## during it for a short hop.
+@export_range(0, 0.25, 0.005) var jump_squat := 0.03
 ## Grace period to still jump after walking off a ledge.
 @export_range(0, 0.3, 0.01) var coyote_time := 0.1
 ## A jump pressed this long before landing still fires.
@@ -88,6 +91,16 @@ enum WallMode { NONE, WALL_JUMP, CLIMB }
 ## Fraction of each pull spent hanging still before the next paw.
 @export_range(0, 0.8, 0.05) var climb_rest := 0.35
 @export_range(0.1, 20, 0.1) var climb_down_speed := 4.0
+
+@export_group("Ledges")
+## Catch ledge corners while falling (hold S to fall past).
+@export var can_ledge_grab := true
+## How far (tiles) above or below the top of your head a lip can be caught.
+@export_range(0.1, 1.5, 0.05) var ledge_grab_reach := 0.5
+## Seconds to pull up onto the ledge (W or toward it).
+@export_range(0.05, 1.5, 0.01) var ledge_climb_time := 0.2
+## Height (tiles) of a jump from hanging.
+@export_range(0, 10, 0.1) var ledge_jump_height := 3.0
 
 @export_group("Look")
 ## Side-to-side rock while walking (ogre waddle).

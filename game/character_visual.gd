@@ -26,7 +26,9 @@ func _process(delta: float) -> void:
 
 	# Squash recovers toward the airborne stretch target.
 	var target := 0.0
-	if not on_floor and not body.climbing:
+	if body.jump_squat_left > 0.0:
+		target = 0.28
+	elif not on_floor and not body.climbing and not body.hanging and not body.pulling_up:
 		target = -clampf(absf(v.y) / s.max_fall_speed, 0.0, 1.0) * 0.18
 	_squash = lerpf(_squash, target, 1.0 - exp(-14.0 * delta))
 
@@ -64,6 +66,13 @@ func _draw() -> void:
 	var eye_x := f * size.x * 0.18
 	draw_rect(Rect2(Vector2(eye_x - 1 + f * 2, eye_y - 1.5), Vector2(2, 3)), Color.WHITE)
 	draw_rect(Rect2(Vector2(eye_x - 1 - f * 2, eye_y - 1.5), Vector2(2, 3)), Color.WHITE)
+
+	# Both paws on the lip while hanging or pulling up.
+	if body.hanging or body.pulling_up:
+		var paw := Vector2(4, 3)
+		var lip_y := -size.y - Character.LEDGE_HANG_DROP - paw.y
+		draw_rect(Rect2(Vector2(f * size.x / 2 - paw.x / 2 - f * 3, lip_y), paw), col.darkened(0.3))
+		draw_rect(Rect2(Vector2(f * size.x / 2 - paw.x / 2 + f * 2, lip_y), paw), col.darkened(0.3))
 
 	# Paws on the wall while climbing: alternate which one reaches up.
 	if body.climbing:

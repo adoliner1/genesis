@@ -25,6 +25,7 @@ There's no build step: pull the latest and press F5 again.
 | S + Space | Drop through a one-way ledge |
 | W / S at a wall | Ogre: climb up / down |
 | Hold toward a wall | Rogue: wall-slide (Space to kick off) |
+| Fall past a ledge you're facing | Grab it and hang. W or toward pulls up, Space jumps, S or away drops. Hold S to fall past without grabbing |
 | Tab | Switch character |
 | R | Respawn |
 | F1 | Tuning panel |
@@ -44,7 +45,7 @@ The test course (`levels/test_course.txt`, edit as ASCII) has pillars 1–6 tile
 
 | Path | What |
 | --- | --- |
-| `game/character.gd` | Shared movement: run/friction, jump arcs, coyote time, jump buffer, apex hang, fast-fall, wall-slide/jump, climbing, mantling, hard landings |
+| `game/character.gd` | Shared movement: run/sprint/crouch, jump squat and arcs, coyote time, jump buffer, apex hang, fast-fall, wall-slide/jump, climbing, mantling, ledge grab, hard landings |
 | `game/movement_stats.gd` | The stat sheet (all tunable values, with descriptions) |
 | `game/character_visual.gd` | Placeholder body plus squash/stretch, lean, waddle, bob |
 | `game/player_input.gd` | One tick of input; movement never reads the keyboard directly, so input can later come over the network |
