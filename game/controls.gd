@@ -12,6 +12,7 @@ const BINDINGS := {
 	"switch_character": [KEY_TAB],
 	"respawn": [KEY_R],
 	"toggle_tuning": [KEY_F1],
+	"toggle_anim_labels": [KEY_F2],
 }
 
 

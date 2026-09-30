@@ -103,6 +103,14 @@ enum WallMode { NONE, WALL_JUMP, CLIMB }
 @export_range(0, 10, 0.1) var ledge_jump_height := 3.0
 
 @export_group("Look")
+## Optional art. Animations are named after Character.Anim in snake_case
+## (idle, run, jump_squat, ...); missing ones fall back (see CharacterVisual).
+## Without it, a placeholder block is drawn.
+@export var sprite_frames: SpriteFrames
+## Sprite position relative to the feet (bottom-centre of the hitbox), in px.
+@export var sprite_offset := Vector2.ZERO
+## Set false if the source art faces left.
+@export var sprite_faces_right := true
 ## Side-to-side rock while walking (ogre waddle).
 @export_range(0, 0.4, 0.01) var waddle := 0.0
 ## Up-and-down bob while walking, in pixels.

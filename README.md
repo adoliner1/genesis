@@ -41,6 +41,28 @@ Every character runs the same movement code (`game/character.gd`). Only its stat
 
 The test course (`levels/test_course.txt`, edit as ASCII) has pillars 1–6 tiles tall (labeled), a 1-tall crawlspace (crouch; Rogue only), pits 3/5/7/9 wide, a 2-tall tunnel only the Rogue fits through, stacked one-way ledges, and a tall shaft for wall-jumping. The faint grid is 1 tile; brighter lines are every 5.
 
+## Art
+
+Characters are drawn from their **animation state**, never from raw physics, so sprites drop in without touching movement code. Press **F2** in game to label each character's current state.
+
+To add sprites, create a `SpriteFrames` resource with animations named after the states below, and set it as `sprite_frames` on the character's `.tres`. Also set `sprite_offset` (px from the feet) and `sprite_faces_right`. If an animation is missing, the state falls back along the chain until one exists, so a character with only `idle`, `run` and `fall` already works. Hitboxes stay as simple boxes (`body_size`, `crouch_height`); draw art to fit them. Squash and stretch still apply on top of sprites.
+
+| State | When | Falls back to |
+| --- | --- | --- |
+| `idle` | Standing still | — |
+| `walk` / `run` / `sprint` | Moving on the ground, by speed | `idle` / `walk` / `run` |
+| `skid` | Reversing at speed | `run` |
+| `crouch` / `crawl` | Crouched, still / moving | `idle` / `crouch` |
+| `jump_squat` | Crouch before takeoff | `crouch` |
+| `rise` / `fall` / `fast_fall` | Airborne | `idle` / `rise` / `fall` |
+| `land` | Brief moment after touching down | `crouch` |
+| `stagger` | Hard-landing freeze | `land` |
+| `wall_slide` | Rogue sliding down a wall | `fall` |
+| `climb` / `climb_idle` | Ogre on a wall, moving / holding | `hang` / `climb` |
+| `hang` / `pull_up` | On a ledge | `fall` / `climb` |
+
+Planned style: pixel art on the 16 px tile grid, likely AI-generated plus free asset packs.
+
 ## Layout
 
 | Path | What |

@@ -162,6 +162,10 @@ func _revert() -> void:
 	var path := character.stats.resource_path
 	var fresh := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REPLACE) as MovementStats
 	character.stats = fresh
+	character.apply_body_size()
+	for child in character.get_children():
+		if child is CharacterVisual:
+			child._apply_art()
 	_rebuild()
 	_status.text = "Reverted to %s" % path
 

@@ -73,7 +73,7 @@ func _update_help() -> void:
 			walls = "Wall: hold toward a wall to slide, Space to kick off"
 		MovementStats.WallMode.CLIMB:
 			walls = "Wall: W into a wall to climb, S to climb down, Space to hop off"
-	help.text = "%s\nA/D move · Shift sprint · Ctrl walk · S crouch (tap in air after the peak: fast-fall) · Space jump (hold = higher) · S+Space drops through ledges\n%s\nLedges: fall past one to hang · W/toward pulls up · Space jumps · S or away drops (hold S to fall past)\nTab switch character · R respawn · F1 tuning panel" % [
+	help.text = "%s\nA/D move · Shift sprint · Ctrl walk · S crouch (tap in air after the peak: fast-fall) · Space jump (hold = higher) · S+Space drops through ledges\n%s\nLedges: fall past one to hang · W/toward pulls up · Space jumps · S or away drops (hold S to fall past)\nTab switch character · R respawn · F1 tuning panel · F2 animation labels" % [
 		c.stats.display_name.to_upper(), walls]
 
 
@@ -93,6 +93,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		camera.snap_to_target()
 	elif event.is_action_pressed("toggle_tuning"):
 		panel.visible = not panel.visible
+	elif event.is_action_pressed("toggle_anim_labels"):
+		CharacterVisual.show_labels = not CharacterVisual.show_labels
 
 
 func _on_landed(impact: float, c: Character) -> void:

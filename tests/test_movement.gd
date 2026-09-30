@@ -53,6 +53,15 @@ func sim(c: Character, seconds: float, setup: Callable) -> float:
 	return min_y
 
 
+## True if `want` appears in `seq` in this order (other states may sit between).
+func _in_order(seq: Array[String], want: Array) -> bool:
+	var i := 0
+	for n in seq:
+		if i < want.size() and n == want[i]:
+			i += 1
+	return i == want.size()
+
+
 func check(name: String, ok: bool, detail: String) -> void:
 	print("%s  %s  (%s)" % ["PASS" if ok else "FAIL", name, detail])
 	if not ok:
@@ -207,6 +216,31 @@ func run_all() -> void:
 	check("Rogue jumps from a hang", d.hanging == false and (hang_y - jump_peak) / T > 2.5,
 			"rose %.2f tiles" % ((hang_y - jump_peak) / T))
 	d.queue_free()
+
+	# Animation states: record the sequence of distinct states for a few moves.
+	var o2 := spawn("res://characters/ogre.tres", Vector2(89 * T, floor_y))
+	var seq: Array[String] = []
+	o2.anim_changed.connect(func(a: Character.Anim) -> void: seq.append(Character.anim_name(a)))
+	sim(o2, 0.2, func(_i, _t): pass)
+	sim(o2, 1.2, func(i: PlayerInput, t: int): i.jump_held = true; i.jump_pressed = t == 0)
+	check("Ogre jump anims", _in_order(seq, ["jump_squat", "rise", "fall", "land", "idle"]), ", ".join(seq))
+	seq.clear()
+	sim(o2, 0.8, func(i: PlayerInput, _t): i.move_x = 1.0; i.sprint = true)
+	sim(o2, 0.3, func(i: PlayerInput, _t): i.move_x = -1.0)
+	sim(o2, 0.4, func(i: PlayerInput, _t): i.down = true; i.move_x = -1.0)
+	sim(o2, 0.4, func(i: PlayerInput, _t): i.down = true)
+	check("Ogre ground anims", _in_order(seq, ["walk", "run", "sprint", "skid", "crawl", "crouch"]), ", ".join(seq))
+	o2.queue_free()
+
+	# Sprite fallback: with only idle/run/fall drawn, every state still resolves.
+	var frames := SpriteFrames.new()
+	for n in ["idle", "run", "fall"]:
+		frames.add_animation(n)
+	var resolved := {}
+	for a in Character.Anim.values():
+		resolved[Character.anim_name(a)] = CharacterVisual.resolve_anim(frames, Character.anim_name(a))
+	check("Sprite fallbacks", resolved.sprint == "run" and resolved.fast_fall == "fall" and resolved.wall_slide == "fall"
+			and resolved.hang == "fall" and resolved.crouch == "idle" and not resolved.values().has(""), str(resolved))
 
 	# Rogue: kick off the shaft wall (inner x 124..128, wall on the left at x=123).
 	var r := spawn("res://characters/rogue.tres", Vector2(124.45 * T, 20 * T))

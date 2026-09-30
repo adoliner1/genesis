@@ -5,6 +5,15 @@ extends CharacterBody2D
 ## Each tick: set `input`, then call `step(delta)` (done in _physics_process).
 
 signal landed(impact_speed: float)  # tiles/s at touchdown
+signal anim_changed(anim: Anim)
+
+## What the body is doing, for visuals and sound. Sprite animations are named
+## after these in snake_case (see anim_name()); visuals never read physics state.
+enum Anim {
+	IDLE, WALK, RUN, SPRINT, SKID, CROUCH, CRAWL,
+	JUMP_SQUAT, RISE, FALL, FAST_FALL, LAND, STAGGER,
+	WALL_SLIDE, CLIMB, CLIMB_IDLE, HANG, PULL_UP,
+}
 
 const TILE := 16.0
 const LAYER_SOLID := 1
@@ -14,6 +23,7 @@ const LEDGE_REGRAB_DELAY := 0.3
 const LEDGE_MIN_HANG := 0.12  # before a held direction can pull you up
 ## Head sits this far below the lip while hanging, so you can peek over.
 const LEDGE_HANG_DROP := 3.0
+const LAND_ANIM_TIME := 0.1
 
 @export var stats: MovementStats
 
@@ -30,6 +40,8 @@ var climb_phase := 0.0
 var hanging := false
 var pulling_up := false
 var jump_squat_left := 0.0
+var anim := Anim.IDLE
+var anim_time := 0.0  # seconds in the current anim
 var stagger_left := 0.0
 var last_impact := 0.0
 
@@ -48,6 +60,7 @@ var _regrab_left := 0.0
 var _pull_t := 0.0
 var _pull_from := Vector2.ZERO
 var _pull_to := Vector2.ZERO
+var _land_anim_left := 0.0
 var _shape: CollisionShape2D
 
 
@@ -82,6 +95,15 @@ func _physics_process(delta: float) -> void:
 
 
 func step(delta: float) -> void:
+	_move(delta)
+	_update_anim(delta)
+
+
+static func anim_name(a: Anim) -> String:
+	return Anim.keys()[a].to_lower()
+
+
+func _move(delta: float) -> void:
 	var s := stats
 	var on_floor := is_on_floor()
 
@@ -138,6 +160,7 @@ func _tick_timers(delta: float) -> void:
 	_wall_coyote_left -= delta
 	stagger_left -= delta
 	_regrab_left -= delta
+	_land_anim_left -= delta
 	if _drop_left > 0.0:
 		_drop_left -= delta
 		if _drop_left <= 0.0:
@@ -275,6 +298,7 @@ func _standing_on_one_way() -> bool:
 
 func _on_landed(impact: float) -> void:
 	last_impact = impact
+	_land_anim_left = LAND_ANIM_TIME
 	if impact >= stats.hard_landing_speed:
 		stagger_left = stats.landing_stagger
 		velocity.x = 0.0
@@ -448,3 +472,50 @@ func _ledge_step(delta: float) -> void:
 		hanging = false
 		_pull_t = 0.0
 		_pull_from = global_position
+
+
+# --- animation state ------------------------------------------------------------
+
+func _update_anim(delta: float) -> void:
+	var next := _pick_anim()
+	if next == anim:
+		anim_time += delta
+		return
+	anim = next
+	anim_time = 0.0
+	anim_changed.emit(anim)
+
+
+func _pick_anim() -> Anim:
+	var s := stats
+	if pulling_up:
+		return Anim.PULL_UP
+	if hanging:
+		return Anim.HANG
+	if climbing:
+		return Anim.CLIMB if input.up or input.down else Anim.CLIMB_IDLE
+	if stagger_left > 0.0:
+		return Anim.STAGGER
+	if jump_squat_left > 0.0:
+		return Anim.JUMP_SQUAT
+	if not is_on_floor():
+		if wall_sliding:
+			return Anim.WALL_SLIDE
+		if fast_falling:
+			return Anim.FAST_FALL
+		return Anim.RISE if velocity.y < 0.0 else Anim.FALL
+
+	var speed := absf(velocity.x) / TILE
+	if crouching:
+		return Anim.CRAWL if speed > 0.1 else Anim.CROUCH
+	if _land_anim_left > 0.0 and input.move_x == 0.0:
+		return Anim.LAND
+	if input.move_x != 0.0 and signf(input.move_x) != signf(velocity.x) and speed > s.run_speed * 0.4:
+		return Anim.SKID
+	if speed < 0.1:
+		return Anim.IDLE
+	if sprinting and speed > s.run_speed * 0.8:
+		return Anim.SPRINT
+	if speed > (s.walk_speed + s.run_speed) / 2.0:
+		return Anim.RUN
+	return Anim.WALK
