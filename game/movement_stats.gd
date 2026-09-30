@@ -27,8 +27,19 @@ enum WallMode { NONE, WALL_JUMP, CLIMB }
 @export_range(1, 400, 1) var ground_accel := 60.0
 ## Slowing down with no input (tiles/s²). Low = slidey.
 @export_range(1, 400, 1) var ground_friction := 70.0
-## Reversing direction (tiles/s²).
+## Reversing direction below run speed (tiles/s²).
 @export_range(1, 400, 1) var turn_accel := 120.0
+## Burst speed (tiles/s) when you start moving or flick the other way. For
+## dash_time you can reverse instantly with a fresh burst (dash dancing).
+@export_range(0, 40, 0.1) var dash_speed := 9.0
+@export_range(0, 0.5, 0.01) var dash_time := 0.2
+## Reversing out of a run commits you to a brake for this long (s): no
+## steering, slowing at skid_decel, still facing the old way. Jump cancels it.
+@export_range(0, 0.6, 0.01) var skid_time := 0.2
+@export_range(1, 400, 1) var skid_decel := 60.0
+## Every landing locks you out for this long (s): no steering or jumping, and
+## ground_friction bleeds off the speed you landed with.
+@export_range(0, 0.3, 0.005) var landing_lag := 0.05
 
 @export_group("Air")
 ## Top speed you can steer to in the air (tiles/s). Sprint doesn't apply in the
@@ -56,6 +67,12 @@ enum WallMode { NONE, WALL_JUMP, CLIMB }
 ## Tap S at or after the peak of a jump to drop at this speed until you land (Smash-style).
 @export_range(0, 80, 0.5) var fast_fall_speed := 30.0
 @export_range(0, 3, 1) var air_jumps := 0
+## At takeoff, horizontal speed = ground speed × jump_momentum + held direction ×
+## jump_steer, capped at jump_max_speed. Hold back to jump backward out of a run.
+## Facing is locked in the air.
+@export_range(0, 1.5, 0.05) var jump_momentum := 0.9
+@export_range(0, 20, 0.1) var jump_steer := 3.0
+@export_range(0, 40, 0.1) var jump_max_speed := 12.0
 ## Crouch before leaving the ground (s). Heavier = longer. Release Space
 ## during it for a short hop.
 @export_range(0, 0.25, 0.005) var jump_squat := 0.03
