@@ -13,6 +13,7 @@ const GRID_COLOR := Color(1, 1, 1, 0.035)
 const GRID_COLOR_5 := Color(1, 1, 1, 0.08)
 
 var grid: Array[String] = []
+var show_height_labels := false  # column-height numbers, for the flat test course
 var spawns := {}  # char -> Vector2 (feet position)
 var _solid_rects: Array[Rect2i] = []
 var _one_way_rects: Array[Rect2i] = []
@@ -32,6 +33,14 @@ func size_tiles() -> Vector2i:
 	for row in grid:
 		w = maxi(w, row.length())
 	return Vector2i(w, grid.size())
+
+
+func is_solid(x: int, y: int) -> bool:
+	return _cell(x, y) == "#"
+
+
+func is_one_way(x: int, y: int) -> bool:
+	return _cell(x, y) == "-"
 
 
 func _cell(x: int, y: int) -> String:
@@ -123,7 +132,8 @@ func _draw() -> void:
 	for r in _one_way_rects:
 		var rr := Rect2(Vector2(r.position) * TILE, Vector2(r.size.x * TILE, 3))
 		draw_rect(rr, ONE_WAY_COLOR)
-	_draw_height_labels()
+	if show_height_labels:
+		_draw_height_labels()
 
 
 ## Label each free-standing column with its height in tiles, to check jump heights by eye.

@@ -13,6 +13,8 @@ const BINDINGS := {
 	"respawn": [KEY_R],
 	"toggle_tuning": [KEY_F1],
 	"toggle_anim_labels": [KEY_F2],
+	"next_level": [KEY_F3],
+	"toggle_minimap": [KEY_M],
 }
 
 

@@ -2,7 +2,7 @@
 
 A co-op (2–5 players) side-view stealth platformer: explore foggy caverns together, get past guards and tough enemies, solve small puzzles, and combine each character's different skills.
 
-**Current stage:** movement prototype. Two characters (Rogue and Ogre) on a test course, with a live tuning panel. No networking, enemies or fog yet.
+**Current stage:** movement prototype. Two characters (Rogue and Ogre) in a big cavern sandbox (plus the test course), with a minimap and a live tuning panel. No networking, enemies or fog yet.
 
 ## Run it
 
@@ -28,6 +28,8 @@ There's no build step: pull the latest and press F5 again.
 | Fall past a ledge you're facing | Grab it and hang. W or toward pulls up, Space jumps, S or away drops. Hold S to fall past without grabbing |
 | Tab | Switch character |
 | R | Respawn |
+| M | Minimap: small → large → off |
+| F3 | Next level (Caverns / Test course) |
 | F1 | Tuning panel |
 
 ## Tuning movement
@@ -38,6 +40,15 @@ Every character runs the same movement code (`game/character.gd`). Only its stat
 - **Save** writes them to that character's `.tres` (commit it to keep it). **Revert** reloads from disk. **Copy** puts the values on the clipboard so you can paste them to Claude.
 - The panel shows the computed jump height and distance, and measures your last actual jump.
 - You can also edit the `.tres` files in Godot's inspector.
+
+## Levels
+
+Levels are ASCII files in `levels/` (`#` rock, `-` one-way ledge, `R`/`O` spawns). **F3** cycles them.
+
+- **Caverns** (`levels/caverns.txt`, 300×110 tiles, the default) is a sandbox to roam: spawn hall, a chimney up to a long high gallery, a low tunnel with pits and a 1-tall crawlspace (Rogue only; the Ogre goes up the chimney instead), a big central cavern with floating rocks and a ledge ladder, a 2-tall Rogue tunnel, stepped shelves in the east and a deep well, plus a crawl along the bottom.
+- **Test course**: see below.
+
+The **minimap** (bottom-left, **M**) shows the whole level, a dot per character (the one you control is ringed) and your camera's view box. The large mode names each character.
 
 The test course (`levels/test_course.txt`, edit as ASCII) has pillars 1–6 tiles tall (labeled), a 1-tall crawlspace (crouch; Rogue only), pits 3/5/7/9 wide, a 2-tall tunnel only the Rogue fits through, stacked one-way ledges, and a tall shaft for wall-jumping. The faint grid is 1 tile; brighter lines are every 5.
 
@@ -72,6 +83,7 @@ Planned style: pixel art on the 16 px tile grid, likely AI-generated plus free a
 | `game/character_visual.gd` | Placeholder body plus squash/stretch, lean, waddle, bob |
 | `game/player_input.gd` | One tick of input; movement never reads the keyboard directly, so input can later come over the network |
 | `game/level.gd` | Builds a level from ASCII |
+| `game/minimap.gd` | Whole-level map with character markers |
 | `game/tuning_panel.gd`, `game/game_camera.gd`, `game/main.gd`, `game/controls.gd` | Panel, camera (look-ahead + shake), sandbox, key bindings |
 | `tests/test_movement.gd` | Headless checks that drive characters with scripted input |
 
@@ -79,4 +91,5 @@ Planned style: pixel art on the 16 px tile grid, likely AI-generated plus free a
 
 ```bash
 godot --headless --path . -s tests/test_movement.gd
+godot --headless --path . -s tests/test_caverns.gd
 ```
