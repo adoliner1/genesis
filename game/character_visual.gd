@@ -98,8 +98,10 @@ func _process(delta: float) -> void:
 	if _sprite.visible:
 		var tex := _sprite.sprite_frames.get_frame_texture(_sprite.animation, _sprite.frame)
 		var h := tex.get_height() if tex else 0
-		_sprite.position = Vector2(0, -h / 2.0) + s.sprite_offset
-		_sprite.flip_h = (body.facing < 0) == s.sprite_faces_right
+		# sprite_offset is authored for the art's own facing; mirror x with the sprite.
+		var flip := (body.facing < 0) == s.sprite_faces_right
+		_sprite.flip_h = flip
+		_sprite.position = Vector2(-s.sprite_offset.x if flip else s.sprite_offset.x, s.sprite_offset.y - h / 2.0)
 	queue_redraw()
 
 

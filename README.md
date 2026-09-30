@@ -61,7 +61,15 @@ To add sprites, create a `SpriteFrames` resource with animations named after the
 | `climb` / `climb_idle` | Ogre on a wall, moving / holding | `hang` / `climb` |
 | `hang` / `pull_up` | On a ledge | `fall` / `climb` |
 
-Planned style: pixel art on the 16 px tile grid, likely AI-generated plus free asset packs.
+Style: pixel art on the 16 px tile grid, generated with PixelLab (side view, drawn facing right; the game mirrors for left).
+
+**Importing from PixelLab:** download the character zip (the `download` link from PixelLab's `get_character`), map our states to its animations in `art/characters/<name>/animations.json` (pick frame subsets to split one animation, e.g. a jump into `jump_squat`/`rise`/`fall`/`land`), then run:
+
+```bash
+GODOT=/path/to/godot tools/import_pixellab.sh <character.zip> <name>
+```
+
+It writes the frames and `<name>_frames.tres`, and sets `sprite_frames` and a feet-aligned `sprite_offset` on `characters/<name>.tres`.
 
 ## Layout
 
