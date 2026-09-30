@@ -20,6 +20,7 @@ var facing := 1
 var climbing := false
 var crouching := false
 var sprinting := false
+var fast_falling := false
 var wall_sliding := false
 var climb_phase := 0.0
 var stagger_left := 0.0
@@ -127,14 +128,18 @@ func _tick_timers(delta: float) -> void:
 
 func _horizontal(delta: float, on_floor: bool, move_x: float) -> void:
 	var s := stats
-	var speed := s.run_speed
-	if crouching:
-		speed = s.crouch_speed
-	elif input.walk:
-		speed = s.walk_speed
-	elif input.sprint:
-		speed = s.sprint_speed
-	sprinting = input.sprint and not crouching and not input.walk and move_x != 0.0
+	# In the air only air_speed counts: sprint/walk do nothing, but speed you
+	# jumped with carries (it's above target, so it bleeds off at air_friction).
+	var speed := s.air_speed
+	if on_floor:
+		speed = s.run_speed
+		if crouching:
+			speed = s.crouch_speed
+		elif input.walk:
+			speed = s.walk_speed
+		elif input.sprint:
+			speed = s.sprint_speed
+	sprinting = on_floor and input.sprint and not crouching and not input.walk and move_x != 0.0
 	var target := move_x * speed * TILE
 	var accel: float
 	var friction := s.ground_friction if on_floor else s.air_friction
@@ -176,10 +181,17 @@ func _gravity(delta: float, on_floor: bool) -> void:
 		g *= s.apex_gravity_mult
 	velocity.y += g * delta
 
+	# Smash-style fast-fall: tap S at or after the peak and it sticks until you
+	# land, jump again, or grab a wall. Tapping while still rising does nothing.
+	if on_floor or wall_sliding:
+		fast_falling = false
+	elif input.down_pressed and velocity.y > -1.0 * TILE:
+		fast_falling = true
+
 	var max_fall := s.max_fall_speed * TILE
 	if wall_sliding:
 		max_fall = s.wall_slide_speed * TILE
-	elif input.down and not on_floor and velocity.y > 0.0:
+	elif fast_falling:
 		max_fall = s.fast_fall_speed * TILE
 		velocity.y = maxf(velocity.y, max_fall)
 	velocity.y = minf(velocity.y, max_fall)
@@ -211,6 +223,7 @@ func _try_jump(on_floor: bool) -> void:
 		return
 	_jump_buffer_left = 0.0
 	_coyote_left = 0.0
+	fast_falling = false
 
 
 func _try_drop_through(on_floor: bool) -> void:
@@ -290,6 +303,7 @@ func _update_climb(on_floor: bool, move_x: float) -> void:
 			climb_phase = 0.0
 	if climbing:
 		facing = _wall_dir
+		fast_falling = false
 
 
 func _climb_motion(delta: float) -> void:

@@ -20,7 +20,7 @@ There's no build step: pull the latest and press F5 again.
 | Shift | Sprint |
 | Ctrl | Walk (slow) |
 | S (on the ground) | Crouch (stays down under low ceilings) |
-| S (in the air) | Fast-fall |
+| S (tap in the air, at or after the peak) | Fast-fall until you land (Smash-style) |
 | Space | Jump (hold for a higher jump) |
 | S + Space | Drop through a one-way ledge |
 | W / S at a wall | Ogre: climb up / down |

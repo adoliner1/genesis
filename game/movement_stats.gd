@@ -31,8 +31,11 @@ enum WallMode { NONE, WALL_JUMP, CLIMB }
 @export_range(1, 400, 1) var turn_accel := 120.0
 
 @export_group("Air")
+## Top speed you can steer to in the air (tiles/s). Sprint doesn't apply in the
+## air, but a sprinting jump keeps its speed and bleeds it off at air_friction.
+@export_range(0.5, 30, 0.1) var air_speed := 8.0
 @export_range(0, 400, 1) var air_accel := 40.0
-## Slowing with no input, or when moving faster than run speed (keeps momentum when low).
+## Slowing with no input, or when moving faster than air speed (keeps momentum when low).
 @export_range(0, 400, 1) var air_friction := 20.0
 @export_range(0, 400, 1) var air_turn_accel := 60.0
 
@@ -50,7 +53,7 @@ enum WallMode { NONE, WALL_JUMP, CLIMB }
 ## Gravity multiplier at the apex while jump is held. <1 gives a floaty hang.
 @export_range(0.1, 1.5, 0.05) var apex_gravity_mult := 0.6
 @export_range(0, 60, 0.5) var max_fall_speed := 22.0
-## Hold S in the air after the apex to drop at this speed (Smash-style fast fall).
+## Tap S at or after the peak of a jump to drop at this speed until you land (Smash-style).
 @export_range(0, 80, 0.5) var fast_fall_speed := 30.0
 @export_range(0, 3, 1) var air_jumps := 0
 ## Grace period to still jump after walking off a ledge.

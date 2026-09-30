@@ -117,6 +117,47 @@ func run_all() -> void:
 			check("Ogre is blocked by the crawlspace", c.position.x < 42 * T, "x=%.1f" % (c.position.x / T))
 		c.queue_free()
 
+	# Air rules (Smash-style), jumping on the flat run-up strip.
+	for path in ["res://characters/rogue.tres", "res://characters/ogre.tres"]:
+		var c := spawn(path, Vector2(89 * T, floor_y))
+		var s := c.stats
+		sim(c, 0.2, func(_i, _t): pass)
+		# Standing jump holding sprint + right: air speed caps it, sprint does nothing.
+		var top_vx := [0.0]
+		sim(c, 0.4, func(i: PlayerInput, t: int):
+			i.move_x = 1.0; i.sprint = true; i.jump_held = true; i.jump_pressed = t == 0
+			top_vx[0] = maxf(top_vx[0], c.velocity.x / T))
+		check("%s: sprint does nothing in the air" % s.display_name, top_vx[0] <= s.air_speed + 0.01,
+				"top %.2f tiles/s vs air_speed %.2f" % [top_vx[0], s.air_speed])
+		sim(c, 1.5, func(_i, _t): pass)
+
+		# Sprinting jump keeps its ground speed for a while.
+		c.position = Vector2(88.5 * T, floor_y)
+		c.velocity = Vector2.ZERO
+		sim(c, 0.6, func(i: PlayerInput, _t): i.move_x = 1.0; i.sprint = true)
+		sim(c, 3 * DT, func(i: PlayerInput, t: int): i.move_x = 1.0; i.sprint = true; i.jump_held = true; i.jump_pressed = t == 0)
+		check("%s: sprint jump keeps momentum" % s.display_name, c.velocity.x / T > s.air_speed,
+				"%.2f tiles/s just after takeoff" % (c.velocity.x / T))
+		sim(c, 1.5, func(_i, _t): pass)
+
+		# Fast-fall: a tap while rising is ignored; a tap after the peak sticks.
+		c.position = Vector2(89 * T, floor_y)
+		c.velocity = Vector2.ZERO
+		sim(c, 0.2, func(_i, _t): pass)
+		sim(c, 0.1, func(i: PlayerInput, t: int): i.jump_held = true; i.jump_pressed = t == 0; i.down_pressed = t == 3; i.down = t >= 3)
+		check("%s: fast-fall tap while rising ignored" % s.display_name, not c.fast_falling, "vy=%.1f" % (c.velocity.y / T))
+		sim(c, 2.0, func(_i, _t): pass)
+		c.position = Vector2(89 * T, 12 * T)
+		c.velocity = Vector2.ZERO
+		sim(c, 0.1, func(i: PlayerInput, t: int): i.down_pressed = t == 1; i.down = t <= 1)
+		sim(c, 0.2, func(_i, _t): pass)  # S released
+		check("%s: fast-fall sticks after release" % s.display_name,
+				c.fast_falling and absf(c.velocity.y / T - s.fast_fall_speed) < 0.01,
+				"vy=%.1f tiles/s" % (c.velocity.y / T))
+		sim(c, 2.0, func(_i, _t): pass)
+		check("%s: landing ends fast-fall" % s.display_name, c.is_on_floor() and not c.fast_falling, "")
+		c.queue_free()
+
 	# Rogue: kick off the shaft wall (inner x 124..128, wall on the left at x=123).
 	var r := spawn("res://characters/rogue.tres", Vector2(124.45 * T, 20 * T))
 	sim(r, 0.1, func(i: PlayerInput, _t): i.move_x = -1.0)
