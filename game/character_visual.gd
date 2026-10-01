@@ -7,7 +7,7 @@ extends Node2D
 
 ## Missing animations fall back along this chain until one exists.
 const FALLBACK := {
-	"sprint": "run", "run": "walk", "walk": "idle", "skid": "run",
+	"sprint": "run", "run": "walk", "walk": "idle", "dash": "run", "skid": "run",
 	"crawl": "crouch", "crouch": "idle", "jump_squat": "crouch",
 	"fast_fall": "fall", "fall": "rise", "rise": "idle",
 	"land": "crouch", "stagger": "land",
@@ -87,7 +87,7 @@ func _process(delta: float) -> void:
 
 	rotation = 0.0
 	position = Vector2.ZERO
-	if a in [Character.Anim.WALK, Character.Anim.RUN, Character.Anim.SPRINT, Character.Anim.CRAWL]:
+	if a in [Character.Anim.WALK, Character.Anim.RUN, Character.Anim.SPRINT, Character.Anim.DASH, Character.Anim.CRAWL]:
 		_walk_cycle += delta * lerpf(4.0, 10.0, speed_ratio) / maxf(s.body_size.y / 1.8, 0.5)
 		rotation = sin(_walk_cycle * PI) * s.waddle * minf(speed_ratio, 1.0)
 		position.y = -absf(sin(_walk_cycle * PI)) * s.bob * minf(speed_ratio, 1.0)
@@ -98,8 +98,10 @@ func _process(delta: float) -> void:
 	if _sprite.visible:
 		var tex := _sprite.sprite_frames.get_frame_texture(_sprite.animation, _sprite.frame)
 		var h := tex.get_height() if tex else 0
-		_sprite.position = Vector2(0, -h / 2.0) + s.sprite_offset
-		_sprite.flip_h = (body.facing < 0) == s.sprite_faces_right
+		# sprite_offset is authored for the art's own facing; mirror x with the sprite.
+		var flip := (body.facing < 0) == s.sprite_faces_right
+		_sprite.flip_h = flip
+		_sprite.position = Vector2(-s.sprite_offset.x if flip else s.sprite_offset.x, s.sprite_offset.y - h / 2.0)
 	queue_redraw()
 
 

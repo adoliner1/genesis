@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://qvb277evidk4"
-path="res://.godot/imported/rogue.png-68bddb890000b1c6fa27a6971e17cd11.ctex"
+uid="uid://c5xa5anaedmd7"
+path="res://.godot/imported/idle_3.png-4c0a837e4629a8ccd4661771a2b51f60.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://art/characters/rogue.png"
-dest_files=["res://.godot/imported/rogue.png-68bddb890000b1c6fa27a6971e17cd11.ctex"]
+source_file="res://art/characters/ogre/idle_3.png"
+dest_files=["res://.godot/imported/idle_3.png-4c0a837e4629a8ccd4661771a2b51f60.ctex"]
 
 [params]
 

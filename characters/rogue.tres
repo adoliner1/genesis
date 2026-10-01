@@ -1,21 +1,24 @@
-[gd_resource type="Resource" script_class="MovementStats" load_steps=3 format=3]
+[gd_resource type="Resource" script_class="MovementStats" format=3]
 
 [ext_resource type="Script" path="res://game/movement_stats.gd" id="1"]
-[ext_resource type="SpriteFrames" path="res://art/characters/rogue_frames.tres" id="2"]
+[ext_resource type="SpriteFrames" path="res://art/characters/rogue/rogue_frames.tres" id="2_oyhjr"]
 
 [resource]
 script = ExtResource("1")
 display_name = "Rogue"
 color = Color(0.33, 0.72, 0.66, 1)
-body_size = Vector2(0.8, 1.8)
 run_speed = 9.0
 sprint_speed = 13.0
-crouch_speed = 3.0
-crouch_height = 0.9
 walk_speed = 3.5
+crouch_speed = 3.0
 ground_accel = 70.0
 ground_friction = 45.0
 turn_accel = 110.0
+dash_speed = 10.0
+dash_time = 0.18
+skid_time = 0.16
+skid_decel = 70.0
+landing_lag = 0.05
 air_speed = 8.5
 air_accel = 90.0
 air_friction = 8.0
@@ -23,18 +26,19 @@ air_turn_accel = 120.0
 jump_height = 4.2
 jump_time_to_apex = 0.36
 fall_gravity_mult = 1.5
-jump_cut_gravity_mult = 2.5
 apex_threshold = 2.5
 apex_gravity_mult = 0.55
 max_fall_speed = 20.0
 fast_fall_speed = 30.0
 air_jumps = 0
+jump_momentum = 0.9
+jump_steer = 3.0
+jump_max_speed = 13.0
 jump_squat = 0.03
 coyote_time = 0.1
 jump_buffer = 0.12
 weight = 0.7
 hard_landing_speed = 60.0
-landing_stagger = 0.0
 landing_shake = 0.15
 wall_mode = 1
 wall_slide_speed = 5.0
@@ -42,13 +46,8 @@ wall_jump_height = 3.4
 wall_jump_push = 11.0
 wall_jump_control_lock = 0.14
 wall_coyote_time = 0.1
-can_ledge_grab = true
-ledge_grab_reach = 0.5
 ledge_climb_time = 0.18
 ledge_jump_height = 3.5
-sprite_frames = ExtResource("2")
-sprite_offset = Vector2(-1, 1)
-sprite_faces_right = false
-waddle = 0.0
-bob = 1.0
+sprite_frames = ExtResource("2_oyhjr")
+sprite_offset = Vector2(-1, 5)
 lean = 0.12

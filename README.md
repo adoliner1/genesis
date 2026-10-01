@@ -16,16 +16,16 @@ There's no build step: pull the latest and press F5 again.
 
 | Key | Action |
 | --- | --- |
-| A / D | Move |
+| A / D | Move. A fresh press dashes (burst of speed); flick back during the dash to dash-dance. Reversing out of a run skids first |
 | Shift | Sprint |
 | Ctrl | Walk (slow) |
 | S (on the ground) | Crouch (stays down under low ceilings) |
 | S (tap in the air, at or after the peak) | Fast-fall until you land (Smash-style) |
-| Space | Jump (hold for a higher jump) |
+| Space | Jump (hold for a higher jump). The direction held at takeoff sets your jump: hold back to jump backward out of a run. You keep facing the same way in the air |
 | S + Space | Drop through a one-way ledge |
 | W / S at a wall | Ogre: climb up / down |
 | Hold toward a wall | Rogue: wall-slide (Space to kick off) |
-| Fall past a ledge you're facing | Grab it and hang. W or toward pulls up, Space jumps, S or away drops. Hold S to fall past without grabbing |
+| Fall past a ledge (either side) | Grab it and hang. W or toward pulls up, Space jumps, S or away drops. Hold S to fall past without grabbing |
 | Tab | Switch character |
 | R | Respawn |
 | M | Minimap: small → large → off |
@@ -62,23 +62,32 @@ To add sprites, create a `SpriteFrames` resource with animations named after the
 | --- | --- | --- |
 | `idle` | Standing still | — |
 | `walk` / `run` / `sprint` | Moving on the ground, by speed | `idle` / `walk` / `run` |
-| `skid` | Reversing at speed | `run` |
+| `dash` | Burst when starting to move | `run` |
+| `skid` | Braking out of a run | `run` |
 | `crouch` / `crawl` | Crouched, still / moving | `idle` / `crouch` |
 | `jump_squat` | Crouch before takeoff | `crouch` |
 | `rise` / `fall` / `fast_fall` | Airborne | `idle` / `rise` / `fall` |
-| `land` | Brief moment after touching down | `crouch` |
+| `land` | Landing lag after touching down | `crouch` |
 | `stagger` | Hard-landing freeze | `land` |
 | `wall_slide` | Rogue sliding down a wall | `fall` |
 | `climb` / `climb_idle` | Ogre on a wall, moving / holding | `hang` / `climb` |
 | `hang` / `pull_up` | On a ledge | `fall` / `climb` |
 
-Planned style: pixel art on the 16 px tile grid, likely AI-generated plus free asset packs.
+Style: pixel art on the 16 px tile grid, generated with PixelLab (side view, drawn facing right; the game mirrors for left).
+
+**Importing from PixelLab:** download the character zip (the `download` link from PixelLab's `get_character`), map our states to its animations in `art/characters/<name>/animations.json` (pick frame subsets to split one animation, e.g. a jump into `jump_squat`/`rise`/`fall`/`land`), then run:
+
+```bash
+GODOT=/path/to/godot tools/import_pixellab.sh <character.zip> <name>
+```
+
+It writes the frames and `<name>_frames.tres`, and sets `sprite_frames` and a feet-aligned `sprite_offset` on `characters/<name>.tres`.
 
 ## Layout
 
 | Path | What |
 | --- | --- |
-| `game/character.gd` | Shared movement: run/sprint/crouch, jump squat and arcs, coyote time, jump buffer, apex hang, fast-fall, wall-slide/jump, climbing, mantling, ledge grab, hard landings |
+| `game/character.gd` | Shared movement: dash/run/sprint/skid/crouch, landing lag, takeoff direction, jump squat and arcs, coyote time, jump buffer, apex hang, fast-fall, wall-slide/jump, climbing, mantling, ledge grab, hard landings |
 | `game/movement_stats.gd` | The stat sheet (all tunable values, with descriptions) |
 | `game/character_visual.gd` | Placeholder body plus squash/stretch, lean, waddle, bob |
 | `game/player_input.gd` | One tick of input; movement never reads the keyboard directly, so input can later come over the network |
