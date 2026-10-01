@@ -2,7 +2,9 @@ class_name TuningPanel
 extends CanvasLayer
 ## Live sliders for the active character's MovementStats (toggle with F1).
 ## Changes apply instantly; "Save" writes them back to the character's .tres.
-## Controls never take keyboard focus, so movement keys keep working while it's open.
+## Controls never take keyboard focus, so movement keys keep working while it's open,
+## except the search box: click it (or press /) to filter stats by name, group or
+## description. Enter gives the keys back to the game; Esc also clears the search.
 
 var character: Character:
 	set(c):
@@ -16,6 +18,10 @@ var _title: Label
 var _derived: Label
 var _measured: Label
 var _status: Label
+var _search: LineEdit
+var _rows: Array[Dictionary] = []  # {node, name, group, doc}: what the search matches against
+var _headers := {}  # group name -> header Label
+var _docs := {}  # property -> its ## description from movement_stats.gd
 
 # Live measurement of the last jump.
 var _airborne := false
@@ -54,6 +60,15 @@ func _ready() -> void:
 	_status = _label(outer, "", 11)
 	_status.modulate = Color(1, 1, 1, 0.6)
 
+	_search = LineEdit.new()
+	_search.placeholder_text = "Search stats  ( / )"
+	_search.clear_button_enabled = true
+	_search.add_theme_font_size_override("font_size", 12)
+	_search.text_changed.connect(func(_t: String) -> void: _filter())
+	_search.text_submitted.connect(func(_t: String) -> void: _search.release_focus())
+	_search.gui_input.connect(_on_search_key)
+	outer.add_child(_search)
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -82,29 +97,121 @@ func _button(parent: Node, text: String, cb: Callable) -> void:
 	parent.add_child(b)
 
 
+## True while the search box has the keyboard; the game should ignore movement keys.
+func is_typing() -> bool:
+	return visible and _search != null and _search.has_focus()
+
+
+func focus_search() -> void:
+	_search.grab_focus()
+	_search.select_all()
+
+
+func _on_search_key(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+		_search.clear()
+		_filter()
+		_search.release_focus()
+		_search.accept_event()
+
+
 func _rebuild() -> void:
 	for c in _list.get_children():
 		c.queue_free()
+	_rows.clear()
+	_headers.clear()
 	var stats := character.stats
+	if _docs.is_empty():
+		_docs = _parse_docs(stats.get_script())
 	_title.text = "%s  (F1 hides)" % stats.display_name
+	var group := ""
 	for p in stats.get_property_list():
 		var usage: int = p.usage
 		if usage & PROPERTY_USAGE_GROUP and p.name != "Resource":
-			var header := _label(_list, str(p.name).to_upper(), 12)
+			group = str(p.name)
+			var header := _label(_list, group.to_upper(), 12)
 			header.modulate = Color(1.0, 0.8, 0.45)
+			_headers[group.to_lower()] = header
 			continue
 		if not (usage & PROPERTY_USAGE_EDITOR) or not (usage & PROPERTY_USAGE_SCRIPT_VARIABLE):
 			continue
+		var row: Control
 		if p.hint == PROPERTY_HINT_RANGE:
-			_add_slider(stats, p)
+			row = _add_slider(stats, p)
 		elif p.hint == PROPERTY_HINT_ENUM:
-			_add_enum(stats, p)
+			row = _add_enum(stats, p)
 		elif p.type == TYPE_BOOL:
-			_add_toggle(stats, p)
+			row = _add_toggle(stats, p)
+		else:
+			continue
+		var doc: String = _docs.get(p.name, "")
+		row.tooltip_text = doc
+		_rows.append({"node": row, "group": group.to_lower(), "doc": doc.to_lower(),
+				"name": "%s %s" % [p.name, p.name.replace("_", " ")]})
 	_status.text = stats.resource_path
+	_filter()
 
 
-func _add_slider(stats: MovementStats, p: Dictionary) -> void:
+## Show only rows whose name or group contains every search word; if none do,
+## fall back to matching descriptions too ("slidey" finds ground_friction).
+func _filter() -> void:
+	var words := _search.text.to_lower().split(" ", false)
+	var by_name := _rows.filter(func(row): return _matches(row.name + " " + row.group, words))
+	var hits := by_name if not by_name.is_empty() else _rows.filter(
+			func(row): return _matches(row.name + " " + row.group + " " + row.doc, words))
+	var shown := {}
+	for row in _rows:
+		row.node.visible = row in hits
+		if row.node.visible:
+			shown[row.group] = true
+	for g in _headers:
+		_headers[g].visible = shown.has(g)
+	if not words.is_empty():
+		var n := 0
+		for row in _rows:
+			n += int(row.node.visible)
+		_status.text = "%d of %d stats match" % [n, _rows.size()]
+	elif character:
+		_status.text = character.stats.resource_path
+
+
+static func _matches(hay: String, words: PackedStringArray) -> bool:
+	for w in words:
+		if not hay.contains(w):
+			return false
+	return true
+
+
+## Reads the `## ...` comment above each @export in the stats script, so search
+## can match descriptions ("slidey" finds ground_friction). Empty if the source
+## isn't available (e.g. an exported build).
+static func _parse_docs(script: Script) -> Dictionary:
+	var out := {}
+	if script == null or not script.has_source_code():
+		return out
+	var pending := PackedStringArray()
+	var after_var := false
+	var var_re := RegEx.create_from_string("^@export\\S*(?:\\([^)]*\\))?\\s+var\\s+(\\w+)")
+	for line in script.source_code.split("\n"):
+		var t := line.strip_edges()
+		if t.begins_with("##"):
+			if after_var:
+				pending.clear()
+				after_var = false
+			pending.append(t.trim_prefix("##").strip_edges())
+			continue
+		var m := var_re.search(t)
+		if m:
+			# Consecutive exports with no comment between share the one above.
+			out[m.get_string(1)] = " ".join(pending)
+			after_var = true
+			continue
+		pending.clear()
+		after_var = false
+	return out
+
+
+func _add_slider(stats: MovementStats, p: Dictionary) -> Control:
 	var parts: PackedStringArray = str(p.hint_string).split(",")
 	var row := VBoxContainer.new()
 	row.add_theme_constant_override("separation", 0)
@@ -123,11 +230,13 @@ func _add_slider(stats: MovementStats, p: Dictionary) -> void:
 	update.call(slider.value)
 	row.add_child(slider)
 	_list.add_child(row)
+	return row
 
 
-func _add_enum(stats: MovementStats, p: Dictionary) -> void:
+func _add_enum(stats: MovementStats, p: Dictionary) -> Control:
 	var row := HBoxContainer.new()
-	_label(row, str(p.name), 12)
+	var label := _label(row, str(p.name), 12)
+	label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	var opt := OptionButton.new()
 	opt.focus_mode = Control.FOCUS_NONE
 	for entry in str(p.hint_string).split(","):
@@ -137,9 +246,10 @@ func _add_enum(stats: MovementStats, p: Dictionary) -> void:
 	opt.item_selected.connect(func(i: int) -> void: stats.set(p.name, opt.get_item_id(i)))
 	row.add_child(opt)
 	_list.add_child(row)
+	return row
 
 
-func _add_toggle(stats: MovementStats, p: Dictionary) -> void:
+func _add_toggle(stats: MovementStats, p: Dictionary) -> Control:
 	var box := CheckBox.new()
 	box.focus_mode = Control.FOCUS_NONE
 	box.text = str(p.name)
@@ -147,6 +257,7 @@ func _add_toggle(stats: MovementStats, p: Dictionary) -> void:
 	box.button_pressed = stats.get(p.name)
 	box.toggled.connect(func(on: bool) -> void: stats.set(p.name, on))
 	_list.add_child(box)
+	return box
 
 
 func _fmt(v: float) -> String:

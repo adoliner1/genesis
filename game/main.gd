@@ -101,13 +101,14 @@ func _update_help() -> void:
 			walls = "Wall: hold toward a wall to slide, Space to kick off"
 		MovementStats.WallMode.CLIMB:
 			walls = "Wall: W into a wall to climb, S to climb down, Space to hop off"
-	help.text = "%s  ·  %s\nA/D move · Shift sprint · Ctrl walk · S crouch (tap in air after the peak: fast-fall) · Space jump (hold = higher) · S+Space drops through ledges\n%s\nLedges: fall past one to hang · W/toward pulls up · Space jumps · S or away drops (hold S to fall past)\nTab switch character · R respawn · M map · F3 next level · F1 tuning panel · F2 animation labels" % [
+	help.text = "%s  ·  %s\nA/D move · Shift sprint · Ctrl walk · S crouch (tap in air after the peak: fast-fall) · Space jump (hold = higher) · S+Space drops through ledges\n%s\nLedges: fall past one to hang · W/toward pulls up · Space jumps · S or away drops (hold S to fall past)\nTab switch character · R respawn · M map · F3 next level · F1 tuning panel (/ to search) · F2 animation labels" % [
 		c.stats.display_name.to_upper(), LEVELS[level_index].name, walls]
 
 
 func _physics_process(_delta: float) -> void:
 	# Input is sampled here, before the characters step (they're later in the tree).
-	characters[active].input = PlayerInput.read_local()
+	# Typing in the tuning panel's search box mustn't move the character.
+	characters[active].input = PlayerInput.new() if panel.is_typing() else PlayerInput.read_local()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -124,6 +125,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		minimap.cycle_mode()
 	elif event.is_action_pressed("toggle_tuning"):
 		panel.visible = not panel.visible
+	elif event.is_action_pressed("search_tuning"):
+		panel.visible = true
+		panel.focus_search()
+		get_viewport().set_input_as_handled()
 	elif event.is_action_pressed("toggle_anim_labels"):
 		CharacterVisual.show_labels = not CharacterVisual.show_labels
 

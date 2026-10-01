@@ -15,6 +15,7 @@ const BINDINGS := {
 	"toggle_anim_labels": [KEY_F2],
 	"next_level": [KEY_F3],
 	"toggle_minimap": [KEY_M],
+	"search_tuning": [KEY_SLASH],
 }
 
 

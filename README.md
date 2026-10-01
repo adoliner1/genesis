@@ -31,12 +31,14 @@ There's no build step: pull the latest and press F5 again.
 | M | Minimap: small → large → off |
 | F3 | Next level (Caverns / Test course) |
 | F1 | Tuning panel |
+| / | Search the tuning panel (Enter: back to the game, Esc: clear) |
 
 ## Tuning movement
 
 Every character runs the same movement code (`game/character.gd`). Only its stat sheet differs, Smash-style: `characters/rogue.tres` and `characters/ogre.tres`. Stats are in **tiles** (16 px) and seconds, e.g. `jump_height = 4.2` means a held jump peaks 4.2 tiles up.
 
 - **F1** opens sliders for the active character. Changes apply instantly.
+- **/** (or click the search box) filters stats by name, group or description, e.g. `jump`, `wall`, `slidey`. Hover a stat for its description.
 - **Save** writes them to that character's `.tres` (commit it to keep it). **Revert** reloads from disk. **Copy** puts the values on the clipboard so you can paste them to Claude.
 - The panel shows the computed jump height and distance, and measures your last actual jump.
 - You can also edit the `.tres` files in Godot's inspector.
@@ -101,4 +103,5 @@ It writes the frames and `<name>_frames.tres`, and sets `sprite_frames` and a fe
 ```bash
 godot --headless --path . -s tests/test_movement.gd
 godot --headless --path . -s tests/test_caverns.gd
+godot --headless --path . -s tests/test_tuning_panel.gd
 ```
