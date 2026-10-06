@@ -1,0 +1,37 @@
+[gd_resource type="Resource" script_class="MovementStats" format=3]
+
+[ext_resource type="Script" path="res://game/movement_stats.gd" id="1"]
+[ext_resource type="Script" path="res://game/move.gd" id="3_move"]
+
+[sub_resource type="Resource" id="Move_claw"]
+script = ExtResource("3_move")
+display_name = "Claw"
+anim = "claw"
+startup = 0.2
+active = 0.1
+recovery = 0.35
+damage = 10
+knock_x = 8.0
+knock_y = 4.0
+hitstun = 0.3
+reach = 0.9
+hitbox_height = 0.6
+hitbox_y = 0.9
+arc = 90.0
+lunge = 6.0
+
+[resource]
+script = ExtResource("1")
+display_name = "Ghoul"
+color = Color(0.55, 0.6, 0.5, 1)
+body_size = Vector2(0.9, 1.5)
+run_speed = 7.5
+sprint_speed = 7.5
+air_speed = 7.0
+jump_height = 3.2
+weight = 0.8
+max_health = 22
+attack = SubResource("Move_claw")
+ai = "ground_melee"
+aggro_range = 13.0
+look = "ghoul"

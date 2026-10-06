@@ -1,0 +1,72 @@
+[gd_resource type="Resource" script_class="MovementStats" format=3]
+
+[ext_resource type="Script" path="res://game/movement_stats.gd" id="1"]
+[ext_resource type="Script" path="res://game/move.gd" id="3_move"]
+
+[sub_resource type="Resource" id="Move_fireball"]
+script = ExtResource("3_move")
+display_name = "Fireball"
+kind = 2
+anim = "cast"
+startup = 0.14
+active = 0.02
+recovery = 0.2
+cooldown = 0.7
+damage = 12
+knock_x = 8.0
+knock_y = 7.0
+hitstun = 0.35
+speed = 15.0
+radius = 1.6
+heavy = true
+
+[sub_resource type="Resource" id="Move_wall"]
+script = ExtResource("3_move")
+display_name = "Ice Wall"
+kind = 6
+anim = "cast"
+startup = 0.12
+active = 0.02
+recovery = 0.15
+cooldown = 5.0
+damage = 0
+knock_x = 0.0
+knock_y = 0.0
+hitstun = 0.0
+distance = 9.0
+duration = 8.0
+block_size = Vector2(1, 4)
+
+[sub_resource type="Resource" id="Move_platform"]
+script = ExtResource("3_move")
+display_name = "Ice Platform"
+kind = 6
+anim = "cast"
+startup = 0.12
+active = 0.02
+recovery = 0.15
+cooldown = 4.0
+damage = 0
+knock_x = 0.0
+knock_y = 0.0
+hitstun = 0.0
+distance = 9.0
+duration = 10.0
+block_size = Vector2(4, 1)
+
+[resource]
+script = ExtResource("1")
+display_name = "Wizard"
+color = Color(0.58, 0.42, 0.85, 1)
+body_size = Vector2(0.8, 1.8)
+run_speed = 7.0
+sprint_speed = 10.0
+air_speed = 7.0
+jump_height = 3.4
+glide_speed = 2.5
+weight = 0.75
+max_health = 75
+look = "wizard"
+attack = SubResource("Move_fireball")
+special = SubResource("Move_wall")
+alt = SubResource("Move_platform")

@@ -2,7 +2,9 @@
 
 A co-op (2–5 players) side-view stealth platformer: explore foggy caverns together, get past guards and tough enemies, solve small puzzles, and combine each character's different skills.
 
-**Current stage:** movement prototype. Two characters (Rogue and Ogre) in a big cavern sandbox (plus the test course), with a minimap and a live tuning panel. No networking, enemies or fog yet.
+Design notes, hero kits and level ideas live in [docs/DESIGN.md](docs/DESIGN.md).
+
+**Current stage:** movement + combat prototype. Two characters (Rogue and Ogre) and a flying AI enemy (the Harpy), in a first co-op puzzle room (plates, doors, levers, Ogre throws), a small platforms arena, a big cavern sandbox and the test course, with a minimap and a live tuning panel. No networking or fog yet.
 
 ## Run it
 
@@ -26,10 +28,15 @@ There's no build step: pull the latest and press F5 again.
 | W / S at a wall | Ogre: climb up / down |
 | Hold toward a wall | Rogue: wall-slide (Space to kick off) |
 | Fall past a ledge (either side) | Grab it and hang. W or toward pulls up, Space jumps, S or away drops. Hold S to fall past without grabbing |
+| Left click (or J) | Attack toward the mouse (Rogue: slash) |
+| Right click (or K) | Special toward the mouse (Rogue: teleport to the cursor, up to 5 tiles; once per jump) |
+| Middle click (or L) | Alt attack (none on the heroes yet) |
+| Q | Lock on to the enemy nearest the cursor; Q again lets go. While locked, the cursor is pinned to the target and every move aims at it (teleport included). Let go to aim freely. Rogue: a locked slash from up to 4 tiles away dashes in first |
 | Tab | Switch character |
 | R | Respawn |
 | M | Minimap: small → large → off |
-| F3 | Next level (Caverns / Test course) |
+| F3 | Next level (Ogre door / Platforms / Caverns / Test course) |
+| F4 | Enemy AI: attacking ↔ passive dummy |
 | F1 | Tuning panel |
 | / | Search the tuning panel (Enter: back to the game, Esc: clear) |
 
@@ -43,11 +50,28 @@ Every character runs the same movement code (`game/character.gd`). Only its stat
 - The panel shows the computed jump height and distance, and measures your last actual jump.
 - You can also edit the `.tres` files in Godot's inspector.
 
+## Combat
+
+Bare bones, for feeling out how movement and fighting fit together. Every move aims at the mouse (the cursor is a crosshair) and turns you to face it, even mid-air. Moves live on the stat sheet's left / right / middle click slots (`attack`, `special`, `alt`) as `Move` resources. Each runs **startup → active → recovery**, and its `kind` sets what happens when it goes active:
+
+- **Rogue:** left click **slash**: a quick 150° swing centered on the cursor, top-down on the side you face, with a small sideways lunge. Right click **teleport**: blink to the cursor, or 5 tiles toward it if it is further. It passes through walls to the farthest open spot, steps up over the floor if aimed slightly into it, gives a moment of invulnerability, and works once per trip through the air.
+- **Harpy** (enemy): flies, and has a swipe, a **dash strike** (flashes during wind-up, then rockets along a locked-in aim) and a slow shot. It hovers near the nearest hero and picks a move every second or so. **F4** turns it into a passive dummy for practice.
+- **Ogre:** more health. Left click **smash**: a slow, heavy 120° swing. Right click **grab**: picks up the teammate or enemy in front of him and holds them overhead; right click again **throws** them toward the cursor (or the locked-on target). Lighter characters fly further. A carried teammate can hop off with Space, an enemy wriggles free after 1.2 s, and the Ogre drops whoever he holds if he gets hit.
+
+Hits deal damage, knock the target away (lighter characters fly further, by `weight`) and put them in **hitstun**. At 0 health a hero respawns after 1 s, the Harpy after 2 s. Health bars show over the enemy and over hurt heroes. **F2** draws hurtboxes (blue) and live hitboxes (red).
+
+The F1 panel has a section per move (search e.g. `slash`, `teleport distance`, `damage`). Save writes the moves into the character's `.tres` with everything else.
+
 ## Levels
 
-Levels are ASCII files in `levels/` (`#` rock, `-` one-way ledge, `R`/`O` spawns). **F3** cycles them.
+Levels are ASCII files in `levels/` (`#` rock, `-` one-way ledge, `R`/`O` hero spawns, `E` enemy spawn). **F3** cycles them.
 
-- **Caverns** (`levels/caverns.txt`, 300×110 tiles, the default) is a sandbox to roam: spawn hall, a chimney up to a long high gallery, a low tunnel with pits and a 1-tall crawlspace (Rogue only; the Ogre goes up the chimney instead), a big central cavern with floating rocks and a ledge ladder, a 2-tall Rogue tunnel, stepped shelves in the east and a deep well, plus a crawl along the bottom.
+Mechanisms are declared at the top of a level file with `:` lines that give a character a meaning: `: = plate 1 1.4` (pressure plate on channel 1 that needs 1.4 weight), `: ! lever 1` (hit it to flip it), `: | door 1` (open while any plate or lever on channel 1 is on), `: * goal` (reaching it clears the level). Each channel has its own color. Shut doors are solid and also stop teleports through them, and they won't shut on anyone standing in them.
+
+- **Ogre door** (`levels/ogre_door.txt`, the default) is the first co-op puzzle room, played alone by switching heroes with Tab. The Ogre holds the gold plate so the Rogue can get through the gold door; the Rogue hits the lever inside to let the Ogre in; the Ogre throws the Rogue up to the shelf (too high to reach alone); the Rogue hits the blue lever, which opens the way to the flag.
+
+- **Platforms** (`levels/platforms.txt`, 64×26) is a small arena for combat: tiers of one-way platforms 4 tiles apart (one Rogue jump), a short pillar, two wall shelves, and the Harpy. The minimap starts off here (M shows it).
+- **Caverns** (`levels/caverns.txt`, 300×110 tiles) is a sandbox to roam: spawn hall, a chimney up to a long high gallery, a low tunnel with pits and a 1-tall crawlspace (Rogue only; the Ogre goes up the chimney instead), a big central cavern with floating rocks and a ledge ladder, a 2-tall Rogue tunnel, stepped shelves in the east and a deep well, plus a crawl along the bottom.
 - **Test course**: see below.
 
 The **minimap** (bottom-left, **M**) shows the whole level, a dot per character (the one you control is ringed) and your camera's view box. The large mode names each character.
@@ -74,6 +98,9 @@ To add sprites, create a `SpriteFrames` resource with animations named after the
 | `wall_slide` | Rogue sliding down a wall | `fall` |
 | `climb` / `climb_idle` | Ogre on a wall, moving / holding | `hang` / `climb` |
 | `hang` / `pull_up` | On a ledge | `fall` / `climb` |
+| `attack` | Doing a move; plays the move's own `anim` first (`slash`, `teleport`, `swipe`, `dash_strike`, `shoot`) | `idle` |
+| `hurt` | In hitstun | `fall` |
+| `fly` | Flying (Harpy) | `idle` |
 
 Style: pixel art on the 16 px tile grid, generated with PixelLab (side view, drawn facing right; the game mirrors for left).
 
@@ -89,14 +116,20 @@ It writes the frames and `<name>_frames.tres`, and sets `sprite_frames` and a fe
 
 | Path | What |
 | --- | --- |
-| `game/character.gd` | Shared movement: dash/run/sprint/skid/crouch, landing lag, takeoff direction, jump squat and arcs, coyote time, jump buffer, apex hang, fast-fall, wall-slide/jump, climbing, mantling, ledge grab, hard landings |
+| `game/character.gd` | Shared movement: dash/run/sprint/skid/crouch, landing lag, takeoff direction, jump squat and arcs, coyote time, jump buffer, apex hang, fast-fall, wall-slide/jump, climbing, mantling, ledge grab, hard landings. Also flight (for flyers), moves, hits, knockback, hitstun and health |
 | `game/movement_stats.gd` | The stat sheet (all tunable values, with descriptions) |
 | `game/character_visual.gd` | Placeholder body plus squash/stretch, lean, waddle, bob |
-| `game/player_input.gd` | One tick of input; movement never reads the keyboard directly, so input can later come over the network |
+| `game/player_input.gd` | One tick of input; movement never reads the keyboard directly, so input can later come over the network (or from an AI) |
+| `game/move.gd` | One attack or ability (melee, dash, shot, teleport): timing, damage, knockback, hitbox |
+| `game/flyer_brain.gd` | Harpy AI: hovers near the nearest hero and picks swipe, dash strike or shot. Feeds PlayerInput like a player |
+| `game/projectile.gd`, `game/combat_overlay.gd` | Shots; health bars, the blade and slash trail, the teleport ghost and (F2) hitboxes |
 | `game/level.gd` | Builds a level from ASCII |
+| `game/door.gd`, `game/plate.gd`, `game/lever.gd` | Level mechanisms: doors, pressure plates, levers |
 | `game/minimap.gd` | Whole-level map with character markers |
 | `game/tuning_panel.gd`, `game/game_camera.gd`, `game/main.gd`, `game/controls.gd` | Panel, camera (look-ahead + shake), sandbox, key bindings |
 | `tests/test_movement.gd` | Headless checks that drive characters with scripted input |
+| `tests/test_combat.gd` | Headless checks for slash, teleport, flight, dash strike, shots, death and the AI |
+| `tests/test_puzzle.gd` | Headless checks for plates, doors, levers, grab and throw in the Ogre door room |
 
 ## Tests
 
@@ -104,4 +137,6 @@ It writes the frames and `<name>_frames.tres`, and sets `sprite_frames` and a fe
 godot --headless --path . -s tests/test_movement.gd
 godot --headless --path . -s tests/test_caverns.gd
 godot --headless --path . -s tests/test_tuning_panel.gd
+godot --headless --path . -s tests/test_combat.gd
+godot --headless --path . -s tests/test_puzzle.gd
 ```

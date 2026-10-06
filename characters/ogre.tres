@@ -2,6 +2,58 @@
 
 [ext_resource type="Script" path="res://game/movement_stats.gd" id="1"]
 [ext_resource type="SpriteFrames" path="res://art/characters/ogre/ogre_frames.tres" id="2_rah7p"]
+[ext_resource type="Script" path="res://game/move.gd" id="3_move"]
+
+[sub_resource type="Resource" id="Move_smash"]
+script = ExtResource("3_move")
+display_name = "Smash"
+anim = "smash"
+startup = 0.16
+active = 0.12
+recovery = 0.3
+damage = 16
+knock_x = 12.0
+knock_y = 7.0
+hitstun = 0.4
+reach = 1.1
+hitbox_height = 0.8
+hitbox_y = 1.8
+arc = 120.0
+lunge = 3.0
+heavy = true
+
+[sub_resource type="Resource" id="Move_grab"]
+script = ExtResource("3_move")
+display_name = "Grab / Throw"
+kind = 4
+anim = "grab"
+startup = 0.06
+active = 0.06
+recovery = 0.16
+cooldown = 0.2
+damage = 0
+knock_x = 0.0
+knock_y = 0.0
+hitstun = 0.6
+reach = 0.8
+speed = 32.0
+
+
+[sub_resource type="Resource" id="Move_slam"]
+script = ExtResource("3_move")
+display_name = "Ground Slam"
+kind = 7
+anim = "slam"
+startup = 0.28
+active = 0.05
+recovery = 0.35
+cooldown = 4.0
+damage = 14
+knock_x = 6.0
+knock_y = 14.0
+hitstun = 0.6
+radius = 3.0
+heavy = true
 
 [resource]
 script = ExtResource("1")
@@ -54,6 +106,10 @@ climb_down_speed = 3.5
 ledge_grab_reach = 0.6
 ledge_climb_time = 0.45
 ledge_jump_height = 1.8
+max_health = 160
+attack = SubResource("Move_smash")
+special = SubResource("Move_grab")
+alt = SubResource("Move_slam")
 sprite_frames = ExtResource("2_rah7p")
 sprite_offset = Vector2(1, 13)
 waddle = 0.12

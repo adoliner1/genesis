@@ -1,0 +1,36 @@
+[gd_resource type="Resource" script_class="MovementStats" format=3]
+
+[ext_resource type="Script" path="res://game/movement_stats.gd" id="1"]
+[ext_resource type="Script" path="res://game/move.gd" id="3_move"]
+
+[sub_resource type="Resource" id="Move_spit"]
+script = ExtResource("3_move")
+display_name = "Spit"
+kind = 2
+anim = "spit"
+startup = 0.4
+active = 0.02
+recovery = 0.3
+cooldown = 1.8
+damage = 9
+knock_x = 5.0
+knock_y = 4.0
+hitstun = 0.25
+speed = 11.0
+
+[resource]
+script = ExtResource("1")
+display_name = "Spitter"
+color = Color(0.42, 0.55, 0.32, 1)
+body_size = Vector2(0.9, 1.4)
+run_speed = 5.0
+sprint_speed = 5.0
+air_speed = 5.0
+jump_height = 2.8
+weight = 0.9
+max_health = 20
+attack = SubResource("Move_spit")
+ai = "ground_ranged"
+aggro_range = 14.0
+keep_away = 7.0
+look = "spitter"

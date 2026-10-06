@@ -1,0 +1,68 @@
+[gd_resource type="Resource" script_class="MovementStats" format=3]
+
+[ext_resource type="Script" path="res://game/movement_stats.gd" id="1"]
+[ext_resource type="Script" path="res://game/move.gd" id="3_move"]
+
+[sub_resource type="Resource" id="Move_shot"]
+script = ExtResource("3_move")
+display_name = "Shot"
+kind = 2
+anim = "shoot"
+startup = 0.06
+active = 0.02
+recovery = 0.14
+cooldown = 0.3
+damage = 9
+knock_x = 5.0
+knock_y = 3.0
+hitstun = 0.2
+speed = 30.0
+
+[sub_resource type="Resource" id="Move_rope"]
+script = ExtResource("3_move")
+display_name = "Rope Arrow"
+kind = 5
+anim = "shoot"
+startup = 0.1
+active = 0.02
+recovery = 0.15
+cooldown = 2.0
+damage = 4
+knock_x = 2.0
+knock_y = 1.0
+hitstun = 0.1
+speed = 34.0
+
+[sub_resource type="Resource" id="Move_volley"]
+script = ExtResource("3_move")
+display_name = "Volley"
+kind = 2
+anim = "shoot"
+startup = 0.15
+active = 0.02
+recovery = 0.2
+cooldown = 6.0
+damage = 7
+knock_x = 5.0
+knock_y = 3.0
+hitstun = 0.2
+speed = 26.0
+count = 5
+spread = 32.0
+
+[resource]
+script = ExtResource("1")
+display_name = "Archer"
+color = Color(0.45, 0.68, 0.3, 1)
+body_size = Vector2(0.8, 1.7)
+run_speed = 8.5
+sprint_speed = 12.0
+air_speed = 8.0
+jump_height = 3.8
+air_jumps = 1
+weight = 0.8
+max_health = 80
+look = "archer"
+attack = SubResource("Move_shot")
+special = SubResource("Move_rope")
+alt = SubResource("Move_volley")

@@ -1,0 +1,64 @@
+[gd_resource type="Resource" script_class="MovementStats" format=3]
+
+[ext_resource type="Script" path="res://game/movement_stats.gd" id="1"]
+[ext_resource type="Script" path="res://game/move.gd" id="3_move"]
+
+[sub_resource type="Resource" id="Move_sword"]
+script = ExtResource("3_move")
+display_name = "Sword"
+anim = "slash"
+startup = 0.08
+active = 0.1
+recovery = 0.2
+damage = 12
+knock_x = 9.0
+knock_y = 5.0
+hitstun = 0.3
+reach = 1.25
+hitbox_height = 0.5
+hitbox_y = 1.1
+arc = 110.0
+lunge = 4.0
+lock_dash = 3.0
+lock_dash_speed = 20.0
+
+[sub_resource type="Resource" id="Move_shield"]
+script = ExtResource("3_move")
+display_name = "Shield"
+kind = 8
+anim = "block"
+damage = 0
+knock_x = 0.0
+knock_y = 0.0
+hitstun = 0.0
+
+[sub_resource type="Resource" id="Move_banner"]
+script = ExtResource("3_move")
+display_name = "Banner"
+kind = 9
+anim = "plant"
+startup = 0.3
+active = 0.05
+recovery = 0.3
+cooldown = 20.0
+damage = 0
+knock_x = 0.0
+knock_y = 0.0
+hitstun = 0.0
+
+[resource]
+script = ExtResource("1")
+display_name = "Knight"
+color = Color(0.55, 0.62, 0.75, 1)
+body_size = Vector2(0.9, 1.85)
+run_speed = 7.5
+sprint_speed = 10.5
+air_speed = 7.0
+jump_height = 3.6
+weight = 1.3
+landing_shake = 0.4
+max_health = 140
+look = "knight"
+attack = SubResource("Move_sword")
+special = SubResource("Move_shield")
+alt = SubResource("Move_banner")

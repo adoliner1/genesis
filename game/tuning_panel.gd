@@ -22,6 +22,7 @@ var _search: LineEdit
 var _rows: Array[Dictionary] = []  # {node, name, group, doc}: what the search matches against
 var _headers := {}  # group name -> header Label
 var _docs := {}  # property -> its ## description from movement_stats.gd
+var _move_docs := {}  # same, from move.gd
 
 # Live measurement of the last jump.
 var _airborne := false
@@ -102,6 +103,11 @@ func is_typing() -> bool:
 	return visible and _search != null and _search.has_focus()
 
 
+## True while the panel is open with the mouse over it, so clicks there don't attack.
+func has_mouse() -> bool:
+	return visible and _root.get_global_rect().has_point(_root.get_global_mouse_position())
+
+
 func focus_search() -> void:
 	_search.grab_focus()
 	_search.select_all()
@@ -123,33 +129,53 @@ func _rebuild() -> void:
 	var stats := character.stats
 	if _docs.is_empty():
 		_docs = _parse_docs(stats.get_script())
+		_move_docs = _parse_docs(Move.new().get_script())
 	_title.text = "%s  (F1 hides)" % stats.display_name
+	_add_rows(stats, _docs, "")
+	# Each move gets its own section, searchable by its name ("stab damage").
+	for slot in [["J", stats.attack], ["K", stats.special], ["L", stats.alt]]:
+		var m: Move = slot[1]
+		if m:
+			_add_rows(m, _move_docs, "%s: %s" % [slot[0], m.display_name])
+	_status.text = stats.resource_path
+	_filter()
+
+
+## A row per range / enum / bool export of `res`. With `section` set (a move),
+## everything goes under that one header instead of the script's own groups.
+func _add_rows(res: Resource, docs: Dictionary, section: String) -> void:
 	var group := ""
-	for p in stats.get_property_list():
+	if section != "":
+		group = section
+		_add_header(group)
+	for p in res.get_property_list():
 		var usage: int = p.usage
 		if usage & PROPERTY_USAGE_GROUP and p.name != "Resource":
-			group = str(p.name)
-			var header := _label(_list, group.to_upper(), 12)
-			header.modulate = Color(1.0, 0.8, 0.45)
-			_headers[group.to_lower()] = header
+			if section == "":
+				group = str(p.name)
+				_add_header(group)
 			continue
 		if not (usage & PROPERTY_USAGE_EDITOR) or not (usage & PROPERTY_USAGE_SCRIPT_VARIABLE):
 			continue
 		var row: Control
 		if p.hint == PROPERTY_HINT_RANGE:
-			row = _add_slider(stats, p)
+			row = _add_slider(res, p)
 		elif p.hint == PROPERTY_HINT_ENUM:
-			row = _add_enum(stats, p)
+			row = _add_enum(res, p)
 		elif p.type == TYPE_BOOL:
-			row = _add_toggle(stats, p)
+			row = _add_toggle(res, p)
 		else:
 			continue
-		var doc: String = _docs.get(p.name, "")
+		var doc: String = docs.get(p.name, "")
 		row.tooltip_text = doc
 		_rows.append({"node": row, "group": group.to_lower(), "doc": doc.to_lower(),
 				"name": "%s %s" % [p.name, p.name.replace("_", " ")]})
-	_status.text = stats.resource_path
-	_filter()
+
+
+func _add_header(group: String) -> void:
+	var header := _label(_list, group.to_upper(), 12)
+	header.modulate = Color(1.0, 0.8, 0.45)
+	_headers[group.to_lower()] = header
 
 
 ## Show only rows whose name or group contains every search word; if none do,
@@ -211,7 +237,7 @@ static func _parse_docs(script: Script) -> Dictionary:
 	return out
 
 
-func _add_slider(stats: MovementStats, p: Dictionary) -> Control:
+func _add_slider(stats: Resource, p: Dictionary) -> Control:
 	var parts: PackedStringArray = str(p.hint_string).split(",")
 	var row := VBoxContainer.new()
 	row.add_theme_constant_override("separation", 0)
@@ -233,7 +259,7 @@ func _add_slider(stats: MovementStats, p: Dictionary) -> Control:
 	return row
 
 
-func _add_enum(stats: MovementStats, p: Dictionary) -> Control:
+func _add_enum(stats: Resource, p: Dictionary) -> Control:
 	var row := HBoxContainer.new()
 	var label := _label(row, str(p.name), 12)
 	label.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -249,7 +275,7 @@ func _add_enum(stats: MovementStats, p: Dictionary) -> Control:
 	return row
 
 
-func _add_toggle(stats: MovementStats, p: Dictionary) -> Control:
+func _add_toggle(stats: Resource, p: Dictionary) -> Control:
 	var box := CheckBox.new()
 	box.focus_mode = Control.FOCUS_NONE
 	box.text = str(p.name)
@@ -271,7 +297,7 @@ func _save() -> void:
 
 func _revert() -> void:
 	var path := character.stats.resource_path
-	var fresh := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REPLACE) as MovementStats
+	var fresh := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REPLACE_DEEP) as MovementStats
 	character.stats = fresh
 	character.apply_body_size()
 	for child in character.get_children():
@@ -283,9 +309,14 @@ func _revert() -> void:
 
 func _copy() -> void:
 	var lines := PackedStringArray()
-	for p in character.stats.get_property_list():
-		if p.hint == PROPERTY_HINT_RANGE or p.hint == PROPERTY_HINT_ENUM or (p.type == TYPE_BOOL and p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE):
-			lines.append("%s = %s" % [p.name, str(character.stats.get(p.name))])
+	var s := character.stats
+	for entry in [["", s], ["attack.", s.attack], ["special.", s.special], ["alt.", s.alt]]:
+		var res: Resource = entry[1]
+		if res == null:
+			continue
+		for p in res.get_property_list():
+			if p.hint == PROPERTY_HINT_RANGE or p.hint == PROPERTY_HINT_ENUM or (p.type == TYPE_BOOL and p.usage & PROPERTY_USAGE_SCRIPT_VARIABLE):
+				lines.append("%s%s = %s" % [entry[0], p.name, str(res.get(p.name))])
 	DisplayServer.clipboard_set("\n".join(lines))
 	_status.text = "Copied %d values to clipboard" % lines.size()
 

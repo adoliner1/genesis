@@ -119,11 +119,45 @@ enum WallMode { NONE, WALL_JUMP, CLIMB }
 ## Height (tiles) of a jump from hanging.
 @export_range(0, 10, 0.1) var ledge_jump_height := 3.0
 
+@export_group("Flight")
+## Flies instead of walking: no gravity, steer in any direction, passes through one-way ledges.
+@export var flies := false
+@export_range(0.5, 30, 0.1) var fly_speed := 7.0
+## Speeding up toward fly speed (tiles/s²).
+@export_range(1, 400, 1) var fly_accel := 30.0
+## Hold jump while falling to glide down no faster than this (tiles/s; 0 = can't glide).
+@export_range(0, 20, 0.1) var glide_speed := 0.0
+## Slowing down in flight with no input, and after knockback (tiles/s²).
+@export_range(1, 400, 1) var fly_friction := 20.0
+
+@export_group("Combat")
+## Hit points. Each move's damage comes off this.
+@export_range(1, 500, 1) var max_health := 100
+## Moves on J / K / L (see Move). Leave empty for none.
+@export var attack: Move
+@export var special: Move
+@export var alt: Move
+## Damage taken off every hit that isn't heavy.
+@export_range(0, 50, 1) var armor := 0
+## Always blocks hits from the front, like a raised shield (heavy hits break through).
+@export var front_shield := false
+
+@export_group("AI")
+## How an AI drives this character: "ground_melee", "ground_ranged", "flyer" or "nest" (stands still).
+@export var ai := "ground_melee"
+## Tiles at which an idle enemy notices a hero it can see.
+@export_range(1, 40, 0.5) var aggro_range := 12.0
+## Ranged AI: the distance it tries to keep (tiles).
+@export_range(1, 20, 0.5) var keep_away := 6.0
+
 @export_group("Look")
 ## Optional art. Animations are named after Character.Anim in snake_case
 ## (idle, run, jump_squat, ...); missing ones fall back (see CharacterVisual).
 ## Without it, a placeholder block is drawn.
 @export var sprite_frames: SpriteFrames
+## Placeholder gear drawn over the block when there's no art: "archer", "wizard",
+## "knight", "ghoul", "spitter", "brute", "warden", "nest".
+@export var look := ""
 ## Sprite position relative to the feet (bottom-centre of the hitbox), in px.
 @export var sprite_offset := Vector2.ZERO
 ## Set false if the source art faces left.

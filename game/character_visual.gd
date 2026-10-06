@@ -13,7 +13,9 @@ const FALLBACK := {
 	"land": "crouch", "stagger": "land",
 	"wall_slide": "fall", "climb_idle": "climb", "climb": "hang",
 	"hang": "fall", "pull_up": "climb",
+	"attack": "idle", "hurt": "fall", "fly": "idle",
 }
+const FLASH_TIME := 0.08
 
 static var show_labels := false  # F2
 
@@ -21,12 +23,14 @@ var body: Character
 var _sprite: AnimatedSprite2D
 var _squash := 0.0     # >0 flattened (landing), <0 stretched (rising)
 var _walk_cycle := 0.0
+var _flash := 0.0  # white flash when hit
 
 
 func _ready() -> void:
 	body = get_parent() as Character
 	body.landed.connect(_on_landed)
 	body.anim_changed.connect(_on_anim_changed)
+	body.hit_taken.connect(func(_d: int, _a: Character) -> void: _flash = FLASH_TIME)
 	_sprite = AnimatedSprite2D.new()
 	add_child(_sprite)
 	_apply_art()
@@ -45,6 +49,9 @@ func _on_anim_changed(a: Character.Anim) -> void:
 	if _sprite.sprite_frames == null:
 		return
 	var anim_name := resolve_anim(_sprite.sprite_frames, Character.anim_name(a))
+	# A move plays its own animation (e.g. "slash") if the art has one.
+	if a == Character.Anim.ATTACK and body.current_move and _sprite.sprite_frames.has_animation(body.current_move.anim):
+		anim_name = body.current_move.anim
 	if anim_name != "":
 		_sprite.play(anim_name)
 
@@ -95,6 +102,18 @@ func _process(delta: float) -> void:
 		rotation += signf(v.x) * s.lean * minf(speed_ratio, 1.0)
 	scale = Vector2(sx, sy)
 
+	# Hit flash; enemies pulse bright while winding up a move (their tell);
+	# see-through while invulnerable (e.g. mid-teleport).
+	_flash -= delta
+	var tint := Color.WHITE
+	if _flash > 0.0:
+		tint = Color(3, 3, 3)
+	elif body.team != 0 and body.current_move and body.move_phase() == Character.Phase.STARTUP:
+		tint = Color.WHITE.lerp(Color(2.2, 1.6, 1.6), 0.5 + 0.5 * sin(body.move_time * 40.0))
+	if body.invuln_left > 0.0:
+		tint.a = 0.45
+	modulate = tint
+
 	if _sprite.visible:
 		var tex := _sprite.sprite_frames.get_frame_texture(_sprite.animation, _sprite.frame)
 		var h := tex.get_height() if tex else 0
@@ -123,8 +142,11 @@ func _draw_placeholder() -> void:
 	var col := s.color
 	if a == Character.Anim.WALL_SLIDE:
 		col = col.lightened(0.15)
+	if s.flies:
+		_draw_wings(size, col.darkened(0.25))
 	draw_rect(rect, col)
 	draw_rect(rect, col.darkened(0.45), false, 1.0)
+	_draw_gear(size, col)
 
 	# Eyes toward facing.
 	var eye_y := -size.y * 0.78
@@ -148,3 +170,67 @@ func _draw_placeholder() -> void:
 			var low := -size.y * 0.6
 			draw_rect(Rect2(Vector2(side_x, high if step == 0 else low), paw), paw_col)
 			draw_rect(Rect2(Vector2(side_x, low if step == 0 else high), paw), paw_col)
+
+
+## Placeholder bat wings, flapping faster the faster it flies.
+func _draw_wings(size: Vector2, col: Color) -> void:
+	var speed := body.velocity.length() / Character.TILE
+	var flap := sin(Time.get_ticks_msec() / 1000.0 * (10.0 + speed * 1.5)) * 0.5 + 0.5
+	var root_y := -size.y * 0.7
+	for side in [-1.0, 1.0]:
+		var root := Vector2(side * size.x * 0.4, root_y)
+		var tip := root + Vector2(side * size.x * 0.9, lerpf(-size.y * 0.6, size.y * 0.25, flap))
+		var low := root + Vector2(side * size.x * 0.5, size.y * 0.35)
+		draw_colored_polygon(PackedVector2Array([root, tip, low]), col)
+
+
+## Gear over the placeholder block, so each character reads on sight.
+func _draw_gear(size: Vector2, col: Color) -> void:
+	var f := float(body.facing)
+	var dark := col.darkened(0.5)
+	var top := -size.y
+	match body.stats.look:
+		"archer":
+			# A bow held out front, and a hood point.
+			var c := Vector2(f * size.x * 0.75, -size.y * 0.55)
+			draw_arc(c, size.y * 0.32, -PI / 2 if f > 0 else PI / 2, PI / 2 if f > 0 else 3 * PI / 2, 10, Color("8a5a2b"), 2.0)
+			draw_line(c + Vector2(0, -size.y * 0.32), c + Vector2(0, size.y * 0.32), Color("e8e0c8"), 1.0)
+			draw_colored_polygon(PackedVector2Array([Vector2(-size.x / 2, top), Vector2(size.x / 2, top),
+					Vector2(-f * size.x * 0.3, top - 5)]), col.darkened(0.3))
+		"wizard":
+			# Pointy hat and a staff with a glowing tip.
+			draw_colored_polygon(PackedVector2Array([Vector2(-size.x * 0.75, top + 1), Vector2(size.x * 0.75, top + 1),
+					Vector2(-f * 3, top - 12)]), Color("4a3580"))
+			var sx := f * (size.x / 2 + 3)
+			draw_line(Vector2(sx, -2), Vector2(sx, top - 2), Color("8a6a4a"), 1.5)
+			draw_circle(Vector2(sx, top - 3), 2.5, Color("ffb070"))
+		"knight":
+			# Helmet visor and a shield: at the side, or raised in front while blocking.
+			draw_rect(Rect2(Vector2(-size.x / 2, top), Vector2(size.x, 5)), Color("a8b0c0"))
+			draw_line(Vector2(-size.x * 0.1 + f * 2, top + 3), Vector2(size.x * 0.4 * f, top + 3), dark, 1.0)
+			var shield := Rect2(Vector2(f * size.x * 0.45 - 3, -size.y * 0.75), Vector2(7, 13)) if body.blocking \
+					else Rect2(Vector2(-f * size.x * 0.55 - 3, -size.y * 0.6), Vector2(6, 11))
+			draw_rect(shield, Color("4f7fe0"))
+			draw_rect(shield, Color("f2d24f"), false, 1.0)
+		"ghoul":
+			# Hunched, with claws forward.
+			draw_line(Vector2(f * size.x / 2, -size.y * 0.5), Vector2(f * (size.x / 2 + 4), -size.y * 0.4), Color("e8e0c8"), 1.5)
+			draw_line(Vector2(f * size.x / 2, -size.y * 0.35), Vector2(f * (size.x / 2 + 4), -size.y * 0.25), Color("e8e0c8"), 1.5)
+		"spitter":
+			# A big throat sac.
+			draw_circle(Vector2(f * size.x * 0.3, -size.y * 0.45), size.x * 0.35, Color("8fd04f"))
+		"brute":
+			# Armor plates.
+			for i in 3:
+				var y := -size.y * (0.3 + i * 0.22)
+				draw_line(Vector2(-size.x / 2 + 2, y), Vector2(size.x / 2 - 2, y), Color("9aa0a8"), 2.0)
+		"warden":
+			# A tower shield, always in front.
+			var r := Rect2(Vector2(f * size.x * 0.5 - 4, -size.y * 0.95), Vector2(8, size.y * 0.9))
+			draw_rect(r, Color("6a6f7a"))
+			draw_rect(r, Color("c8c8c8"), false, 1.5)
+		"nest":
+			# Pulsing eggs.
+			var pulse := 0.5 + 0.5 * sin(Time.get_ticks_msec() / 300.0)
+			for i in 3:
+				draw_circle(Vector2((i - 1) * size.x * 0.28, -size.y * 0.35), size.x * 0.14 + pulse, Color("d8e070"))

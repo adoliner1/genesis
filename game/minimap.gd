@@ -46,7 +46,11 @@ func rebuild() -> void:
 
 
 func cycle_mode() -> void:
-	mode = ((mode + 1) % Mode.size()) as Mode
+	set_mode(((mode + 1) % Mode.size()) as Mode)
+
+
+func set_mode(m: Mode) -> void:
+	mode = m
 	visible = mode != Mode.OFF
 	queue_redraw()
 
@@ -91,7 +95,7 @@ func _draw() -> void:
 	var font := ThemeDB.fallback_font
 	var radius := 5.0 if large else 3.5
 	for c in characters:
-		if c == active:
+		if c == active or not c.visible:
 			continue
 		_draw_marker(c, radius, false, font, large)
 	if active:  # on top

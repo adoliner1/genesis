@@ -2,6 +2,62 @@
 
 [ext_resource type="Script" path="res://game/movement_stats.gd" id="1"]
 [ext_resource type="SpriteFrames" path="res://art/characters/rogue/rogue_frames.tres" id="2_oyhjr"]
+[ext_resource type="Script" path="res://game/move.gd" id="3_move"]
+
+[sub_resource type="Resource" id="Move_slash"]
+script = ExtResource("3_move")
+display_name = "Slash"
+anim = "slash"
+startup = 0.05
+active = 0.1
+recovery = 0.18
+damage = 8
+knock_x = 9.0
+knock_y = 6.0
+hitstun = 0.3
+reach = 1.2
+hitbox_height = 0.4
+arc = 150.0
+hitbox_y = 1.0
+lunge = 5.0
+lock_dash = 4.0
+lock_dash_speed = 24.0
+
+[sub_resource type="Resource" id="Move_teleport"]
+script = ExtResource("3_move")
+display_name = "Teleport"
+kind = 3
+anim = "teleport"
+startup = 0.04
+active = 0.0
+recovery = 0.1
+cooldown = 0.5
+air_uses = 1
+invuln = 0.14
+damage = 0
+knock_x = 0.0
+knock_y = 0.0
+hitstun = 0.0
+distance = 5.0
+through_walls = true
+
+
+[sub_resource type="Resource" id="Move_smoke"]
+script = ExtResource("3_move")
+display_name = "Smoke Bomb"
+kind = 10
+anim = "throw"
+startup = 0.05
+active = 0.05
+recovery = 0.12
+cooldown = 8.0
+damage = 0
+knock_x = 0.0
+knock_y = 0.0
+hitstun = 0.0
+distance = 6.0
+radius = 3.0
+duration = 4.0
 
 [resource]
 script = ExtResource("1")
@@ -48,6 +104,10 @@ wall_jump_control_lock = 0.14
 wall_coyote_time = 0.1
 ledge_climb_time = 0.18
 ledge_jump_height = 3.5
+max_health = 100
+attack = SubResource("Move_slash")
+special = SubResource("Move_teleport")
+alt = SubResource("Move_smoke")
 sprite_frames = ExtResource("2_oyhjr")
 sprite_offset = Vector2(-1, 5)
 lean = 0.12
